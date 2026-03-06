@@ -1,25 +1,36 @@
-// poller.js â€” Fetches top 200 coins every 60s, runs Alpha Score, logs triggers + sends Telegram alerts
+// poller.js â€” Fetches top 200 coins every 90s, runs Alpha Score, logs triggers + Telegram alerts
 
 const { computeAlphaScore, DEFAULT_CFG } = require('./alpha');
 const db = require('./db');
 
-const POLL_INTERVAL_MS = 90 * 1000; // 90s â€” avoids CoinGecko 429 rate limit
+const POLL_INTERVAL_MS = 90 * 1000;
 const COINGECKO_BASE   = 'https://api.coingecko.com/api/v3';
 const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const prevState = {}; // { coinId: { alpha, overall, price, rsiValue } }
+const prevState = {};
+let cfg = { ...DEFAULT_CFG };
 
+// Stablecoin + junk blacklist
 const BLACKLIST = new Set([
   'tether','usd-coin','binance-usd','dai','true-usd','frax','usdd','gemini-dollar',
   'paxos-standard','neutrino','usdt','usdc','busd','tusd','usdp','gusd',
   'first-digital-usd','paypal-usd','eurc','stasis-eurs','tether-eurt',
+  'usd1','usx','binance-bridged-usd','usual-usd','usdg','crvusd','bfusd',
+  'usdb','usde','usdy','dollar-on-chain','usdk','fdusd','lisusd','cusd',
+  'deusd','zusd','yusd','susd','lusd','musd','yld','sky',
   'wrapped-bitcoin','wrapped-ethereum','wrapped-bnb','staked-ether','wrapped-steth',
-  'coinbase-wrapped-staked-eth','rocket-pool-eth','wrapped-eeth','leo-token','okb','cronos',
+  'coinbase-wrapped-staked-eth','rocket-pool-eth','wrapped-eeth',
+  'leo-token','okb','cronos','nft','ftn',
 ]);
-let cfg = { ...DEFAULT_CFG };
 
-// â”€â”€ RSI helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function isJunk(id, price) {
+  if (!price || price === 0) return true;
+  if (BLACKLIST.has(id)) return true;
+  if (price >= 0.97 && price <= 1.03) return true; // stablecoin price range
+  return false;
+}
+
 function calcRsi(prices, period = 14) {
   if (!prices || prices.length < period + 1) return null;
   const ch  = prices.slice(1).map((p, i) => p - prices[i]);
@@ -29,14 +40,13 @@ function calcRsi(prices, period = 14) {
   return l === 0 ? 100 : 100 - 100 / (1 + g / l);
 }
 
-// â”€â”€ Telegram â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function sendTelegram(message) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
   try {
     const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message, parse_mode: 'HTML' }),
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message }),
     });
     if (!res.ok) console.error('Telegram error:', await res.text());
   } catch (e) {
@@ -44,7 +54,6 @@ async function sendTelegram(message) {
   }
 }
 
-// â”€â”€ Fetch top 200 coins â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function fetchTop200() {
   const coins = [];
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -54,23 +63,32 @@ async function fetchTop200() {
       const res = await fetch(url);
       if (!res.ok) { console.warn(`CoinGecko page ${page} failed: ${res.status}`); continue; }
       const data = await res.json();
-      coins.push(...data.filter(c => !BLACKLIST.has(c.id)).map(c => ({
-        id:        c.id,
-        symbol:    c.symbol?.toUpperCase(),
-        name:      c.name,
-        price:     c.current_price,
-        change:    c.price_change_percentage_24h,
-        sparkline: c.sparkline_in_7d?.price || [],
-      })));
+      coins.push(...data
+        .filter(c => !isJunk(c.id, c.current_price))
+        .map(c => ({
+          id:        c.id,
+          symbol:    c.symbol?.toUpperCase(),
+          name:      c.name,
+          price:     c.current_price,
+          sparkline: c.sparkline_in_7d?.price || [],
+        }))
+      );
     } catch (e) {
       console.error(`CoinGecko page ${page} error:`, e.message);
     }
-    if (page < 4) await sleep(2000); // 2s between pages to avoid rate limiting
+    if (page < 4) await sleep(2000);
   }
   return coins;
 }
 
-// â”€â”€ Process one coin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function fmtPrice(price) {
+  if (price < 0.0001) return price.toFixed(8);
+  if (price < 0.01)   return price.toFixed(6);
+  if (price < 1)      return price.toFixed(4);
+  if (price < 1000)   return price.toFixed(2);
+  return price.toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
 async function processCoin(coin) {
   const { id, symbol, price, sparkline } = coin;
   if (!sparkline || sparkline.length < 20 || !price) return;
@@ -91,69 +109,48 @@ async function processCoin(coin) {
     const nowBelowSell = alpha      <= cfg.alphaSellThresh;
     const rsiPrev      = prev.rsiValue || null;
     const rsiJustOverbought = rsiNow !== null && rsiPrev !== null && rsiPrev < 65 && rsiNow >= 65;
+    const hasOpenBuy   = prev.hasOpenBuy || false;
 
-    // Check if last trigger was a BUY (open position)
-    // We track this in memory via prevState
-    const hasOpenBuy = prev.hasOpenBuy || false;
-
-    // â”€â”€ BUY trigger â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // BUY trigger
     if (!wasAboveBuy && nowAboveBuy) {
       const reason = earlyTrend
-        ? `âš¡ Early trend: Î± ${alpha} crossed BUY threshold`
-        : `Î± ${alpha} crossed BUY threshold (was ${prev.alpha})`;
+        ? `Alpha ${alpha} crossed BUY threshold (Early Trend)`
+        : `Alpha ${alpha} crossed BUY threshold (was ${prev.alpha})`;
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
-      const msg = [
-        `<b>[ BUY SIGNAL ] ${symbol}</b>`,
-        `Price: <b>$${price.toLocaleString('en-US', { maximumFractionDigits: 4 })}</b>`,
-        `Alpha: <b>${alpha}</b>${earlyTrend ? ' â€” Early Trend' : ''}`,
-        `<i>${reason}</i>`,
-      ].join('\n');
+      const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\n${reason}`;
       await sendTelegram(msg);
-      console.log(`  ðŸŸ¢ BUY       ${symbol.padEnd(8)} Î±=${alpha} @ $${price}`);
+      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} @ $${price}`);
       prevState[id] = { alpha, overall, price, rsiValue: rsiNow, hasOpenBuy: true };
       return;
     }
 
-    // â”€â”€ PEAK EXIT: RSI just crossed 65 while position is open â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // PEAK EXIT
     if (rsiJustOverbought && hasOpenBuy) {
-      const reason = `RSI ${rsiNow.toFixed(1)} entered overbought â€” peak exit`;
+      const reason = `RSI ${rsiNow.toFixed(1)} entered overbought - peak exit`;
       await db.insertTrigger({ coinId: id, symbol, type: 'PEAK_EXIT', price, alpha, reason });
-      const msg = [
-        `<b>[ PEAK EXIT ] ${symbol}</b>`,
-        `Price: <b>$${price.toLocaleString('en-US', { maximumFractionDigits: 4 })}</b>`,
-        `RSI: <b>${rsiNow.toFixed(1)}</b> â€” overbought zone`,
-        `Alpha: ${alpha}`,
-        `<i>${reason}</i>`,
-      ].join('\n');
+      const msg = `[ PEAK EXIT ] ${symbol}\nPrice: $${fmtPrice(price)}\nRSI: ${rsiNow.toFixed(1)} - overbought\nAlpha: ${alpha}\n${reason}`;
       await sendTelegram(msg);
-      console.log(`  âš¡ PEAK_EXIT ${symbol.padEnd(8)} RSI=${rsiNow.toFixed(1)} @ $${price}`);
+      console.log(`  PEAK_EXIT ${symbol.padEnd(8)} RSI=${rsiNow.toFixed(1)} @ $${price}`);
       prevState[id] = { alpha, overall, price, rsiValue: rsiNow, hasOpenBuy: false };
       return;
     }
 
-    // â”€â”€ SELL trigger: alpha weakens (only if open position and no peak exit) â”€â”€
+    // SELL trigger
     if (!wasBelowSell && nowBelowSell && hasOpenBuy) {
-      const reason = `Î± ${alpha} dropped below SELL threshold (was ${prev.alpha})`;
+      const reason = `Alpha ${alpha} dropped below SELL threshold (was ${prev.alpha})`;
       await db.insertTrigger({ coinId: id, symbol, type: 'SELL', price, alpha, reason });
-      const msg = [
-        `<b>[ SELL ALERT ] ${symbol}</b>`,
-        `Price: <b>$${price.toLocaleString('en-US', { maximumFractionDigits: 4 })}</b>`,
-        `Alpha: <b>${alpha}</b> â€” signal weakened`,
-        `<i>${reason}</i>`,
-      ].join('\n');
+      const msg = `[ SELL ALERT ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha} - signal weakened\n${reason}`;
       await sendTelegram(msg);
-      console.log(`  ðŸ”´ SELL      ${symbol.padEnd(8)} Î±=${alpha} @ $${price}`);
+      console.log(`  SELL      ${symbol.padEnd(8)} a=${alpha} @ $${price}`);
       prevState[id] = { alpha, overall, price, rsiValue: rsiNow, hasOpenBuy: false };
       return;
     }
   }
 
-  // Update state â€” preserve hasOpenBuy if alpha is still in BUY zone
   const keepOpen = prev?.hasOpenBuy && alpha >= cfg.alphaSellThresh;
   prevState[id] = { alpha, overall, price, rsiValue: rsiNow, hasOpenBuy: keepOpen || false };
 }
 
-// â”€â”€ Main poll loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function poll() {
   const start = Date.now();
   console.log(`\n[${new Date().toISOString()}] Polling top 200...`);
@@ -169,8 +166,8 @@ async function poll() {
 }
 
 async function start() {
-  console.log('ðŸš€ NEXUS Poller starting...');
-  await sendTelegram('<b>NEXUS Terminal started</b>\nPolling top 200 coins every 60s\nPeak exit: RSI &gt;= 65 after BUY');
+  console.log('NEXUS Poller starting...');
+  await sendTelegram('NEXUS Terminal started\nPolling top 200 coins every 90s\nStablecoins filtered out');
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);
 }
