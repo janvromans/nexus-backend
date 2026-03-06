@@ -3,7 +3,7 @@
 const { computeAlphaScore, DEFAULT_CFG } = require('./alpha');
 const db = require('./db');
 
-const POLL_INTERVAL_MS = 60 * 1000;
+const POLL_INTERVAL_MS = 90 * 1000; // 90s â€” avoids CoinGecko 429 rate limit
 const COINGECKO_BASE   = 'https://api.coingecko.com/api/v3';
 const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -65,7 +65,7 @@ async function fetchTop200() {
     } catch (e) {
       console.error(`CoinGecko page ${page} error:`, e.message);
     }
-    if (page < 4) await sleep(700);
+    if (page < 4) await sleep(2000); // 2s between pages to avoid rate limiting
   }
   return coins;
 }
