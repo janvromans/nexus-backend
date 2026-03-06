@@ -9,6 +9,14 @@ const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 const prevState = {}; // { coinId: { alpha, overall, price, rsiValue } }
+
+const BLACKLIST = new Set([
+  'tether','usd-coin','binance-usd','dai','true-usd','frax','usdd','gemini-dollar',
+  'paxos-standard','neutrino','usdt','usdc','busd','tusd','usdp','gusd',
+  'first-digital-usd','paypal-usd','eurc','stasis-eurs','tether-eurt',
+  'wrapped-bitcoin','wrapped-ethereum','wrapped-bnb','staked-ether','wrapped-steth',
+  'coinbase-wrapped-staked-eth','rocket-pool-eth','wrapped-eeth','leo-token','okb','cronos',
+]);
 let cfg = { ...DEFAULT_CFG };
 
 // â”€â”€ RSI helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -46,7 +54,7 @@ async function fetchTop200() {
       const res = await fetch(url);
       if (!res.ok) { console.warn(`CoinGecko page ${page} failed: ${res.status}`); continue; }
       const data = await res.json();
-      coins.push(...data.map(c => ({
+      coins.push(...data.filter(c => !BLACKLIST.has(c.id)).map(c => ({
         id:        c.id,
         symbol:    c.symbol?.toUpperCase(),
         name:      c.name,
