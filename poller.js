@@ -103,9 +103,9 @@ async function processCoin(coin) {
         : `Î± ${alpha} crossed BUY threshold (was ${prev.alpha})`;
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
       const msg = [
-        `ðŸŸ¢ <b>BUY SIGNAL â€” ${symbol}</b>`,
+        `<b>[ BUY SIGNAL ] ${symbol}</b>`,
         `Price: <b>$${price.toLocaleString('en-US', { maximumFractionDigits: 4 })}</b>`,
-        `Alpha Score: <b>${alpha}</b>${earlyTrend ? ' âš¡ Early Trend' : ''}`,
+        `Alpha: <b>${alpha}</b>${earlyTrend ? ' â€” Early Trend' : ''}`,
         `<i>${reason}</i>`,
       ].join('\n');
       await sendTelegram(msg);
@@ -119,10 +119,10 @@ async function processCoin(coin) {
       const reason = `RSI ${rsiNow.toFixed(1)} entered overbought â€” peak exit`;
       await db.insertTrigger({ coinId: id, symbol, type: 'PEAK_EXIT', price, alpha, reason });
       const msg = [
-        `âš¡ <b>PEAK EXIT â€” ${symbol}</b>`,
+        `<b>[ PEAK EXIT ] ${symbol}</b>`,
         `Price: <b>$${price.toLocaleString('en-US', { maximumFractionDigits: 4 })}</b>`,
-        `RSI: <b>${rsiNow.toFixed(1)}</b> â€” entered overbought zone`,
-        `Alpha Score: ${alpha}`,
+        `RSI: <b>${rsiNow.toFixed(1)}</b> â€” overbought zone`,
+        `Alpha: ${alpha}`,
         `<i>${reason}</i>`,
       ].join('\n');
       await sendTelegram(msg);
@@ -136,9 +136,9 @@ async function processCoin(coin) {
       const reason = `Î± ${alpha} dropped below SELL threshold (was ${prev.alpha})`;
       await db.insertTrigger({ coinId: id, symbol, type: 'SELL', price, alpha, reason });
       const msg = [
-        `ðŸ”´ <b>SELL ALERT â€” ${symbol}</b>`,
+        `<b>[ SELL ALERT ] ${symbol}</b>`,
         `Price: <b>$${price.toLocaleString('en-US', { maximumFractionDigits: 4 })}</b>`,
-        `Alpha Score: <b>${alpha}</b> â€” signal quality weakened`,
+        `Alpha: <b>${alpha}</b> â€” signal weakened`,
         `<i>${reason}</i>`,
       ].join('\n');
       await sendTelegram(msg);
@@ -170,7 +170,7 @@ async function poll() {
 
 async function start() {
   console.log('ðŸš€ NEXUS Poller starting...');
-  await sendTelegram('ðŸš€ <b>NEXUS Terminal backend started</b>\nPolling top 200 coins every 60s.\nPeak exit detection: RSI â‰¥ 65 after BUY âš¡');
+  await sendTelegram('<b>NEXUS Terminal started</b>\nPolling top 200 coins every 60s\nPeak exit: RSI &gt;= 65 after BUY');
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);
 }
