@@ -36,6 +36,14 @@ async function init() {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS tracked_coins (
+      coin_id    TEXT PRIMARY KEY,
+      symbol     TEXT NOT NULL,
+      name       TEXT,
+      added_at   TIMESTAMPTZ DEFAULT NOW(),
+      auto_added BOOLEAN DEFAULT TRUE
+    );
   `);
   console.log('âœ“ PostgreSQL connected');
 }
@@ -53,6 +61,14 @@ async function getTriggers(coinIds, limit = 500) {
   const { rows } = await pool.query(
     `SELECT * FROM triggers WHERE coin_id IN (${placeholders}) ORDER BY fired_at DESC LIMIT $${coinIds.length + 1}`,
     [...coinIds, limit]
+  );
+  return rows;
+}
+
+async function getAllTriggers(limit = 2000) {
+  const { rows } = await pool.query(
+    `SELECT * FROM triggers ORDER BY fired_at DESC LIMIT $1`,
+    [limit]
   );
   return rows;
 }
@@ -76,8 +92,32 @@ async function getPriceHistory(coinId, hours = 168) {
   return rows;
 }
 
+// Tracked coins
+async function addTrackedCoin({ coinId, symbol, name, autoAdded = true }) {
+  await pool.query(
+    `INSERT INTO tracked_coins (coin_id, symbol, name, auto_added)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (coin_id) DO NOTHING`,
+    [coinId, symbol, name || symbol, autoAdded]
+  );
+}
+
+async function removeTrackedCoin(coinId) {
+  await pool.query('DELETE FROM tracked_coins WHERE coin_id = $1', [coinId]);
+}
+
+async function getTrackedCoins() {
+  const { rows } = await pool.query('SELECT * FROM tracked_coins ORDER BY added_at DESC');
+  return rows;
+}
+
 async function purgeOldTriggers() {
   await pool.query(`DELETE FROM triggers WHERE fired_at < NOW() - INTERVAL '90 days'`);
 }
 
-module.exports = { init, insertTrigger, getTriggers, insertPricePoint, getPriceHistory, purgeOldTriggers };
+module.exports = {
+  init, insertTrigger, getTriggers, getAllTriggers,
+  insertPricePoint, getPriceHistory,
+  addTrackedCoin, removeTrackedCoin, getTrackedCoins,
+  purgeOldTriggers
+};
