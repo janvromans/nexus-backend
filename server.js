@@ -1,4 +1,4 @@
-// server.js — Express API + starts the poller
+// server.js â€” Express API + starts the poller
 // Endpoints used by the NEXUS frontend to load trigger history
 
 const express = require('express');
@@ -19,7 +19,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ── Optional API key auth ─────────────────────────────────────────────────────
+// â”€â”€ Optional API key auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const API_KEY = process.env.API_KEY; // set in Railway env vars
 function auth(req, res, next) {
   if (!API_KEY) return next(); // no key set = open (local dev)
@@ -28,7 +28,7 @@ function auth(req, res, next) {
   next();
 }
 
-// ── GET /api/triggers ─────────────────────────────────────────────────────────
+// â”€â”€ GET /api/triggers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Returns trigger log for specified coins
 // Query: ?coins=icp,ethereum,dogecoin&limit=200
 app.get('/api/triggers', auth, async (req, res) => {
@@ -60,7 +60,7 @@ app.get('/api/triggers', auth, async (req, res) => {
   }
 });
 
-// ── GET /api/history/:coinId ──────────────────────────────────────────────────
+// â”€â”€ GET /api/history/:coinId â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Returns price + alpha history for a single coin (for charting)
 app.get('/api/history/:coinId', auth, async (req, res) => {
   try {
@@ -72,8 +72,8 @@ app.get('/api/history/:coinId', auth, async (req, res) => {
   }
 });
 
-// ── GET /api/status ───────────────────────────────────────────────────────────
-// Health check — returns uptime and last poll time
+// â”€â”€ GET /api/status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Health check â€” returns uptime and last poll time
 const startTime = new Date();
 app.get('/api/status', async (req, res) => {
   const uptimeSecs = Math.floor((Date.now() - startTime) / 1000);
@@ -87,22 +87,55 @@ app.get('/api/status', async (req, res) => {
   });
 });
 
-// ── GET /api/coins ────────────────────────────────────────────────────────────
-// Returns list of all coin IDs that have at least one trigger stored
-app.get('/api/coins', auth, async (req, res) => {
+// â”€â”€ GET /api/tracked â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+app.get('/api/tracked', auth, async (req, res) => {
   try {
-    const rows = await db.getTriggers([], 0); // special case handled below
-    res.json({ message: 'Use /api/triggers?coins=id1,id2 to fetch triggers' });
+    const rows = await db.getTrackedCoins();
+    res.json(rows.map(r => ({ coinId: r.coin_id, symbol: r.symbol, name: r.name, addedAt: r.added_at })));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// ── Start ─────────────────────────────────────────────────────────────────────
+// â”€â”€ POST /api/tracked â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+app.post('/api/tracked', auth, async (req, res) => {
+  try {
+    const { coinId, symbol, name, action } = req.body;
+    if (action === 'remove') {
+      await db.removeTrackedCoin(coinId);
+    } else {
+      await db.addTrackedCoin({ coinId, symbol, name, autoAdded: false });
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// â”€â”€ GET /api/alltriggers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+app.get('/api/alltriggers', auth, async (req, res) => {
+  try {
+    const rows = await db.getAllTriggers(2000);
+    const result = {};
+    for (const row of rows) {
+      if (!result[row.coin_id]) result[row.coin_id] = [];
+      result[row.coin_id].push({
+        type: row.type, price: row.price, alpha: row.alpha,
+        time: row.fired_at, reason: row.reason, replayed: false,
+      });
+    }
+    for (const id of Object.keys(result)) result[id].reverse();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// â”€â”€ Start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function main() {
   await db.init();
   app.listen(PORT, () => {
-    console.log(`✓ API server listening on port ${PORT}`);
+    console.log(`âœ“ API server listening on port ${PORT}`);
   });
   await poller.start();
 }
