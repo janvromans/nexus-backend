@@ -1,4 +1,4 @@
-// poller.js â€” Fetches top 200 coins every 90s, runs Alpha Score, logs triggers + Telegram alerts
+// poller.js â€” Fetches top 200 coins every 90s, runs Alpha Score, auto-tracks BUY signals
 
 const { computeAlphaScore, DEFAULT_CFG } = require('./alpha');
 const db = require('./db');
@@ -11,7 +11,6 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const prevState = {};
 let cfg = { ...DEFAULT_CFG };
 
-// Stablecoin + junk blacklist
 const BLACKLIST = new Set([
   'tether','usd-coin','binance-usd','dai','true-usd','frax','usdd','gemini-dollar',
   'paxos-standard','neutrino','usdt','usdc','busd','tusd','usdp','gusd',
@@ -27,7 +26,7 @@ const BLACKLIST = new Set([
 function isJunk(id, price) {
   if (!price || price === 0) return true;
   if (BLACKLIST.has(id)) return true;
-  if (price >= 0.97 && price <= 1.03) return true; // stablecoin price range
+  if (price >= 0.97 && price <= 1.03) return true;
   return false;
 }
 
@@ -90,7 +89,7 @@ function fmtPrice(price) {
 }
 
 async function processCoin(coin) {
-  const { id, symbol, price, sparkline } = coin;
+  const { id, symbol, name, price, sparkline } = coin;
   if (!sparkline || sparkline.length < 20 || !price) return;
 
   const history = [...sparkline, price];
@@ -111,15 +110,17 @@ async function processCoin(coin) {
     const rsiJustOverbought = rsiNow !== null && rsiPrev !== null && rsiPrev < 65 && rsiNow >= 65;
     const hasOpenBuy   = prev.hasOpenBuy || false;
 
-    // BUY trigger
+    // BUY trigger â€” auto-track coin for cycle logging
     if (!wasAboveBuy && nowAboveBuy) {
       const reason = earlyTrend
         ? `Alpha ${alpha} crossed BUY threshold (Early Trend)`
         : `Alpha ${alpha} crossed BUY threshold (was ${prev.alpha})`;
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
-      const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\n${reason}`;
+      // Auto-add to tracked coins so cycle gets logged
+      await db.addTrackedCoin({ coinId: id, symbol, name, autoAdded: true });
+      const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\n${reason}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
-      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} @ $${price}`);
+      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} @ $${price} [auto-tracked]`);
       prevState[id] = { alpha, overall, price, rsiValue: rsiNow, hasOpenBuy: true };
       return;
     }
@@ -167,7 +168,7 @@ async function poll() {
 
 async function start() {
   console.log('NEXUS Poller starting...');
-  await sendTelegram('NEXUS Terminal started\nPolling top 200 coins every 90s\nStablecoins filtered out');
+  await sendTelegram('NEXUS Terminal started\nPolling top 200 coins every 90s\nAuto-tracking all BUY signals');
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);
 }
