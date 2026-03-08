@@ -11,6 +11,10 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const prevState = {};
 let cfg = { ...DEFAULT_CFG };
 
+// Cache for extra coin market data (served to frontend via /api/extracoins)
+const extraCoinsCache = { data: [], updatedAt: null };
+module.exports.getExtraCoinsCache = () => extraCoinsCache;
+
 const BLACKLIST = new Set([
   'tether','usd-coin','binance-usd','dai','true-usd','frax','usdd','gemini-dollar',
   'paxos-standard','neutrino','usdt','usdc','busd','tusd','usdp','gusd',
@@ -80,13 +84,20 @@ async function fetchTop200() {
   // Fetch extra coins outside top 200
   const EXTRA_IDS = ['non-playable-coin','clearpool','verge','velo','zigchain'];
   try {
-    const r = await fetch(`${COINGECKO_BASE}/coins/markets?vs_currency=usd&ids=${EXTRA_IDS.join(',')}&sparkline=true`);
+    await new Promise(r => setTimeout(r, 3000)); // wait 3s to avoid rate limit
+    const r = await fetch(`${COINGECKO_BASE}/coins/markets?vs_currency=usd&ids=${EXTRA_IDS.join(',')}&sparkline=true&price_change_percentage=24h`);
     if (r.ok) {
       const extras = await r.json();
-      coins.push(...extras.filter(c => !isJunk(c.id, c.current_price)).map(c => ({
+      const extraMapped = extras.filter(c => !isJunk(c.id, c.current_price)).map(c => ({
         id: c.id, symbol: c.symbol?.toUpperCase(), name: c.name,
         price: c.current_price, sparkline: c.sparkline_in_7d?.price || [],
-      })));
+        change: c.price_change_percentage_24h, rank: c.market_cap_rank || 999,
+      }));
+      // Update cache for frontend
+      extraCoinsCache.data = extraMapped;
+      extraCoinsCache.updatedAt = new Date().toISOString();
+      console.log(`  Extra coins cached: ${extraMapped.map(c => c.symbol).join(', ')}`);
+      coins.push(...extraMapped);
     }
   } catch(e) { console.warn('Extra coins fetch failed:', e.message); }
   return coins;
