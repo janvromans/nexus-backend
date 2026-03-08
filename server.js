@@ -131,6 +131,21 @@ app.get('/api/alltriggers', auth, async (req, res) => {
   }
 });
 
+// â”€â”€ GET /api/extracoins â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Returns cached extra coin market data (NPC, CPOOL, XVG, VELO, ZIG etc.)
+// Populated by the poller every 90s â€” frontend uses this instead of calling CoinGecko directly
+app.get('/api/extracoins', auth, async (req, res) => {
+  try {
+    const cache = poller.getExtraCoinsCache();
+    res.json({
+      coins: cache.data || [],
+      updatedAt: cache.updatedAt || null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // â”€â”€ Start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function main() {
   await db.init();
