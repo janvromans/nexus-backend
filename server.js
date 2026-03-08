@@ -131,16 +131,32 @@ app.get('/api/alltriggers', auth, async (req, res) => {
   }
 });
 
-// â”€â”€ GET /api/extracoins â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Returns cached extra coin market data (NPC, CPOOL, XVG, VELO, ZIG etc.)
-// Populated by the poller every 90s â€” frontend uses this instead of calling CoinGecko directly
-app.get('/api/extracoins', auth, async (req, res) => {
+// â”€â”€ GET /api/coins â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Returns all current coin prices + 7-day history from DB
+// Frontend uses this instead of calling CoinGecko directly
+app.get('/api/coins', auth, async (req, res) => {
   try {
-    const cache = poller.getExtraCoinsCache();
-    res.json({
-      coins: cache.data || [],
-      updatedAt: cache.updatedAt || null,
-    });
+    const cache = poller.getCoinCache();
+    if (!cache.data || !cache.data.length) {
+      return res.json({ coins: [], updatedAt: null });
+    }
+
+    // Attach stored price history for each coin
+    const coinsWithHistory = await Promise.all(
+      cache.data.map(async coin => {
+        try {
+          const history = await db.getPriceHistory(coin.id, 168);
+          return {
+            ...coin,
+            sparkline: history.map(h => h.price),
+          };
+        } catch {
+          return { ...coin, sparkline: [] };
+        }
+      })
+    );
+
+    res.json({ coins: coinsWithHistory, updatedAt: cache.updatedAt });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
