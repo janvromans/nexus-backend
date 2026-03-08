@@ -12,6 +12,23 @@ const prevState = {};
 let cfg = { ...DEFAULT_CFG };
 let pollCount = 0;
 
+// BTC trend filter â€” suppresses BUY signals when BTC is in a downtrend
+let btcTrend = 'UNKNOWN'; // 'BULL', 'BEAR', 'UNKNOWN'
+
+function updateBtcTrend(btcHistory) {
+  if (!btcHistory || btcHistory.length < 30) return;
+  const prices = btcHistory.map(h => h.price);
+  // Simple trend: compare EMA9 vs EMA21
+  const k9 = 2 / 10, k21 = 2 / 22;
+  let e9 = prices.slice(0, 9).reduce((a,b)=>a+b,0)/9;
+  let e21 = prices.slice(0, 21).reduce((a,b)=>a+b,0)/21;
+  for (let i = 9; i < prices.length; i++) e9 = prices[i]*k9 + e9*(1-k9);
+  for (let i = 21; i < prices.length; i++) e21 = prices[i]*k21 + e21*(1-k21);
+  const prev = btcTrend;
+  btcTrend = e9 > e21 ? 'BULL' : 'BEAR';
+  if (prev !== btcTrend) console.log(`  BTC trend changed: ${prev} â†’ ${btcTrend} (EMA9=${e9.toFixed(0)}, EMA21=${e21.toFixed(0)})`);
+}
+
 // Cache of current coin prices + metadata served to frontend
 const coinCache = { data: [], updatedAt: null };
 module.exports.getCoinCache = () => coinCache;
@@ -155,16 +172,22 @@ async function processCoin(coin, storedHistory) {
     const rsiJustOverbought = rsiNow !== null && rsiPrev !== null && rsiPrev < 65 && rsiNow >= 65;
     const hasOpenBuy   = prev.hasOpenBuy || false;
 
-    // BUY trigger
+    // BUY trigger â€” blocked in bear market unless alpha is very strong (80+)
     if (!wasAboveBuy && nowAboveBuy) {
+      if (btcTrend === 'BEAR' && alpha < 80) {
+        console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} a=${alpha}`);
+        prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false };
+        return;
+      }
       const reason = earlyTrend
-        ? `Alpha ${alpha} crossed BUY threshold (Early Trend)`
-        : `Alpha ${alpha} crossed BUY threshold (was ${prev.alpha})`;
+        ? `Alpha ${alpha} crossed BUY threshold (Early Trend)${btcTrend === 'BEAR' ? ' [override: alphaâ‰¥80]' : ''}`
+        : `Alpha ${alpha} crossed BUY threshold (was ${prev.alpha})${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
       await db.addTrackedCoin({ coinId: id, symbol, name, autoAdded: true });
-      const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\n${reason}\nNow tracking for cycle data.`;
+      const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : '\nBTC trend: BEAR OVERRIDE (alpha>=80)';
+      const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
-      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} @ $${price} [auto-tracked]`);
+      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} @ $${price} [auto-tracked] [BTC:${btcTrend}]`);
       prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true };
       return;
     }
@@ -208,10 +231,16 @@ async function poll() {
     coinCache.data = coins;
     coinCache.updatedAt = new Date().toISOString();
 
+    // Update BTC trend filter
+    try {
+      const btcHistory = await db.getPriceHistory('bitcoin', 48); // last 48 hours
+      updateBtcTrend(btcHistory);
+      console.log(`  BTC trend: ${btcTrend}`);
+    } catch(e) {}
+
     // Process each coin using stored DB history
     for (const coin of coins) {
       try {
-        // Get last 200 price points from DB (~5 hours at 90s intervals, or more if available)
         const storedHistory = await db.getPriceHistory(coin.id, 168); // up to 7 days
         await processCoin(coin, storedHistory);
       } catch(e) {
@@ -234,3 +263,4 @@ async function start() {
 }
 
 module.exports.start = start;
+module.exports.getBtcTrend = () => btcTrend;
