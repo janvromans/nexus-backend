@@ -78,7 +78,7 @@ async function fetchTop200() {
     if (page < 4) await sleep(2000);
   }
   // Fetch extra coins outside top 200
-  const EXTRA_IDS = ['non-playable-coin','clearpool'];
+  const EXTRA_IDS = ['non-playable-coin','clearpool','verge','velo','zigchain'];
   try {
     const r = await fetch(`${COINGECKO_BASE}/coins/markets?vs_currency=usd&ids=${EXTRA_IDS.join(',')}&sparkline=true`);
     if (r.ok) {
