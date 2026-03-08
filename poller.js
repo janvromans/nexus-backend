@@ -81,25 +81,33 @@ async function fetchTop200() {
     }
     if (page < 4) await sleep(2000);
   }
-  // Fetch extra coins outside top 200
+  // Fetch extra coins outside top 200 â€” retried separately with longer delay
   const EXTRA_IDS = ['non-playable-coin','clearpool','verge','velo','zigchain'];
-  try {
-    await new Promise(r => setTimeout(r, 3000)); // wait 3s to avoid rate limit
-    const r = await fetch(`${COINGECKO_BASE}/coins/markets?vs_currency=usd&ids=${EXTRA_IDS.join(',')}&sparkline=true&price_change_percentage=24h`);
-    if (r.ok) {
-      const extras = await r.json();
-      const extraMapped = extras.filter(c => !isJunk(c.id, c.current_price)).map(c => ({
-        id: c.id, symbol: c.symbol?.toUpperCase(), name: c.name,
-        price: c.current_price, sparkline: c.sparkline_in_7d?.price || [],
-        change: c.price_change_percentage_24h, rank: c.market_cap_rank || 999,
-      }));
-      // Update cache for frontend
-      extraCoinsCache.data = extraMapped;
-      extraCoinsCache.updatedAt = new Date().toISOString();
-      console.log(`  Extra coins cached: ${extraMapped.map(c => c.symbol).join(', ')}`);
-      coins.push(...extraMapped);
+  await new Promise(r => setTimeout(r, 5000)); // wait 5s after main pages
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const r = await fetch(`${COINGECKO_BASE}/coins/markets?vs_currency=usd&ids=${EXTRA_IDS.join(',')}&sparkline=true&price_change_percentage=24h`);
+      if (r.ok) {
+        const extras = await r.json();
+        const extraMapped = extras.filter(c => !isJunk(c.id, c.current_price)).map(c => ({
+          id: c.id, symbol: c.symbol?.toUpperCase(), name: c.name,
+          price: c.current_price, sparkline: c.sparkline_in_7d?.price || [],
+          change: c.price_change_percentage_24h, rank: c.market_cap_rank || 999,
+        }));
+        extraCoinsCache.data = extraMapped;
+        extraCoinsCache.updatedAt = new Date().toISOString();
+        console.log(`  Extra coins cached: ${extraMapped.map(c => c.symbol).join(', ')}`);
+        coins.push(...extraMapped);
+        break;
+      } else {
+        console.warn(`  Extra coins attempt ${attempt} failed: ${r.status}`);
+        if (attempt < 3) await new Promise(r => setTimeout(r, 10000)); // wait 10s before retry
+      }
+    } catch(e) {
+      console.warn(`  Extra coins attempt ${attempt} error: ${e.message}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 10000));
     }
-  } catch(e) { console.warn('Extra coins fetch failed:', e.message); }
+  }
   return coins;
 }
 
