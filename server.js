@@ -79,11 +79,15 @@ app.get('/api/status', async (req, res) => {
   const uptimeSecs = Math.floor((Date.now() - startTime) / 1000);
   const hours = Math.floor(uptimeSecs / 3600);
   const mins  = Math.floor((uptimeSecs % 3600) / 60);
+  const cache = poller.getCoinCache();
   res.json({
-    status:  'ok',
-    uptime:  `${hours}h ${mins}m`,
-    started: startTime.toISOString(),
-    version: '1.0.0',
+    status:   'ok',
+    uptime:   `${hours}h ${mins}m`,
+    started:  startTime.toISOString(),
+    version:  '1.0.0',
+    btcTrend: poller.getBtcTrend ? poller.getBtcTrend() : 'UNKNOWN',
+    coinsTracked: cache.data ? cache.data.length : 0,
+    lastPoll: cache.updatedAt || null,
   });
 });
 
