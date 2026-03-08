@@ -1,4 +1,4 @@
-// alpha.js — Alpha Score engine, ported from NEXUS frontend
+// alpha.js â€” Alpha Score engine, ported from NEXUS frontend
 // Identical logic to the browser version so triggers match exactly
 
 const DEFAULT_CFG = {
@@ -6,8 +6,8 @@ const DEFAULT_CFG = {
   alphaMacdCrossWeight: 3,
   alphaMomMaxGood: 15,
   alphaEmaPartialBonus: 2,
-  alphaThresh: 65,
-  alphaSellThresh: 40,
+  alphaThresh: 72,
+  alphaSellThresh: 35,
 };
 
 function ema(prices, period) {
