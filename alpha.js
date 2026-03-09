@@ -7,7 +7,7 @@ const DEFAULT_CFG = {
   alphaMomMaxGood: 15,
   alphaEmaPartialBonus: 2,
   alphaThresh: 75,
-  alphaSellThresh: 35,
+  alphaSellThresh: 28,
 };
 
 function ema(prices, period) {
