@@ -188,12 +188,17 @@ async function processCoin(coin, storedHistory) {
       const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
       console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} @ $${price} [auto-tracked] [BTC:${btcTrend}]`);
-      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true };
+      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now() };
       return;
     }
 
+    // Minimum hold time â€” don't exit within 25 min of BUY
+    const MIN_HOLD_MS = 25 * 60 * 1000;
+    const holdMs = prev.buyOpenedAt ? Date.now() - prev.buyOpenedAt : Infinity;
+    const tooEarly = hasOpenBuy && holdMs < MIN_HOLD_MS;
+
     // PEAK EXIT
-    if (rsiJustOverbought && hasOpenBuy) {
+    if (rsiJustOverbought && hasOpenBuy && !tooEarly) {
       const reason = `RSI ${rsiNow.toFixed(1)} entered overbought - peak exit`;
       await db.insertTrigger({ coinId: id, symbol, type: 'PEAK_EXIT', price, alpha, reason });
       const msg = `[ PEAK EXIT ] ${symbol}\nPrice: $${fmtPrice(price)}\nRSI: ${rsiNow.toFixed(1)} - overbought\nAlpha: ${alpha}\n${reason}`;
@@ -203,9 +208,13 @@ async function processCoin(coin, storedHistory) {
       return;
     }
 
+    if (tooEarly && (rsiJustOverbought || nowBelowSell) && hasOpenBuy) {
+      console.log(`  HOLD_LOCK ${symbol.padEnd(8)} a=${alpha} [${Math.round(holdMs/60000)}/${MIN_HOLD_MS/60000}min]`);
+    }
+
     // SELL trigger
-    if (!wasBelowSell && nowBelowSell && hasOpenBuy) {
-      const reason = `Alpha ${alpha} dropped below SELL threshold (was ${prev.alpha})`;
+    if (!wasBelowSell && nowBelowSell && hasOpenBuy && !tooEarly) {
+      const reason = `Alpha ${alpha} dropped below SELL threshold (was ${prev.alpha}) [held ${Math.round(holdMs/60000)}min]`;
       await db.insertTrigger({ coinId: id, symbol, type: 'SELL', price, alpha, reason });
       const msg = `[ SELL ALERT ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha} - signal weakened\n${reason}`;
       await sendTelegram(msg);
