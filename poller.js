@@ -1,4 +1,4 @@
-// poller.js â€” Fetches top 100 coins every 90s using stored history for Alpha Score
+// poller.js — Fetches top 100 coins every 90s using stored history for Alpha Score
 
 const { computeAlphaScore, DEFAULT_CFG } = require('./alpha');
 const db = require('./db');
@@ -12,7 +12,7 @@ const prevState = {};
 let cfg = { ...DEFAULT_CFG };
 let pollCount = 0;
 
-// BTC trend filter â€” suppresses BUY signals when BTC is in a downtrend
+// BTC trend filter — suppresses BUY signals when BTC is in a downtrend
 let btcTrend = 'UNKNOWN'; // 'BULL', 'BEAR', 'UNKNOWN'
 
 function updateBtcTrend(btcHistory) {
@@ -26,7 +26,7 @@ function updateBtcTrend(btcHistory) {
   for (let i = 21; i < prices.length; i++) e21 = prices[i]*k21 + e21*(1-k21);
   const prev = btcTrend;
   btcTrend = e9 > e21 ? 'BULL' : 'BEAR';
-  if (prev !== btcTrend) console.log(`  BTC trend changed: ${prev} â†’ ${btcTrend} (EMA9=${e9.toFixed(0)}, EMA21=${e21.toFixed(0)})`);
+  if (prev !== btcTrend) console.log(`  BTC trend changed: ${prev} → ${btcTrend} (EMA9=${e9.toFixed(0)}, EMA21=${e21.toFixed(0)})`);
 }
 
 // Cache of current coin prices + metadata served to frontend
@@ -169,10 +169,11 @@ async function processCoin(coin, storedHistory) {
     const wasBelowSell = prev.alpha <= cfg.alphaSellThresh;
     const nowBelowSell = alpha      <= cfg.alphaSellThresh;
     const rsiPrev      = prev.rsiValue || null;
+    const rsiOverbought = rsiNow !== null && rsiNow >= 65;
     const rsiJustOverbought = rsiNow !== null && rsiPrev !== null && rsiPrev < 65 && rsiNow >= 65;
     const hasOpenBuy   = prev.hasOpenBuy || false;
 
-    // BUY trigger â€” blocked in bear market unless alpha is very strong (80+)
+    // BUY trigger — blocked in bear market unless alpha is very strong (80+)
     if (!wasAboveBuy && nowAboveBuy) {
       if (btcTrend === 'BEAR' && alpha < 80) {
         console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} a=${alpha}`);
@@ -180,7 +181,7 @@ async function processCoin(coin, storedHistory) {
         return;
       }
       const reason = earlyTrend
-        ? `Alpha ${alpha} crossed BUY threshold (Early Trend)${btcTrend === 'BEAR' ? ' [override: alphaâ‰¥80]' : ''}`
+        ? `Alpha ${alpha} crossed BUY threshold (Early Trend)${btcTrend === 'BEAR' ? ' [override: alpha≥80]' : ''}`
         : `Alpha ${alpha} crossed BUY threshold (was ${prev.alpha})${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
       await db.addTrackedCoin({ coinId: id, symbol, name, autoAdded: true });
@@ -188,24 +189,47 @@ async function processCoin(coin, storedHistory) {
       const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
       console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} @ $${price} [auto-tracked] [BTC:${btcTrend}]`);
-      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now() };
+      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), peakAlpha: alpha, peakArmed: false };
       return;
     }
 
-    // Minimum hold time â€” don't exit within 25 min of BUY
+    // Minimum hold time — don't exit within 25 min of BUY
     const MIN_HOLD_MS = 25 * 60 * 1000;
     const holdMs = prev.buyOpenedAt ? Date.now() - prev.buyOpenedAt : Infinity;
     const tooEarly = hasOpenBuy && holdMs < MIN_HOLD_MS;
 
-    // PEAK EXIT
-    if (rsiJustOverbought && hasOpenBuy && !tooEarly) {
-      const reason = `RSI ${rsiNow.toFixed(1)} entered overbought - peak exit`;
-      await db.insertTrigger({ coinId: id, symbol, type: 'PEAK_EXIT', price, alpha, reason });
-      const msg = `[ PEAK EXIT ] ${symbol}\nPrice: $${fmtPrice(price)}\nRSI: ${rsiNow.toFixed(1)} - overbought\nAlpha: ${alpha}\n${reason}`;
-      await sendTelegram(msg);
-      console.log(`  PEAK_EXIT ${symbol.padEnd(8)} RSI=${rsiNow.toFixed(1)} @ $${price}`);
-      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false };
-      return;
+    // PEAK EXIT — smarter trailing alpha drop
+    // Phase 1: RSI crosses ≥65 → arm the peak tracker, record peak alpha
+    // Phase 2: while armed, keep updating peak alpha if it rises further
+    // Phase 3: fire PEAK EXIT only when alpha drops 10pts from peak
+    const PEAK_DROP_TRIGGER = 10;
+    let peakArmed = prev.peakArmed || false;
+    let peakAlpha = prev.peakAlpha || alpha;
+
+    if (hasOpenBuy && !tooEarly) {
+      if (rsiJustOverbought && !peakArmed) {
+        // Arm the tracker — RSI just entered overbought zone
+        peakArmed = true;
+        peakAlpha = alpha;
+        console.log(`  PEAK_ARMED ${symbol.padEnd(8)} a=${alpha} RSI=${rsiNow.toFixed(1)} — watching for drop`);
+      }
+      if (peakArmed) {
+        // Keep updating peak if alpha is still rising
+        if (alpha > peakAlpha) {
+          peakAlpha = alpha;
+          console.log(`  PEAK_NEW_HIGH ${symbol.padEnd(8)} a=${peakAlpha} RSI=${rsiNow?.toFixed(1)}`);
+        }
+        // Fire exit when alpha drops enough from peak
+        if (alpha <= peakAlpha - PEAK_DROP_TRIGGER) {
+          const reason = `Alpha dropped ${peakAlpha - alpha}pts from peak (${peakAlpha}→${alpha}) after RSI overbought [held ${Math.round(holdMs/60000)}min]`;
+          await db.insertTrigger({ coinId: id, symbol, type: 'PEAK_EXIT', price, alpha, reason });
+          const msg = `[ PEAK EXIT ] ${symbol}\nPrice: $${fmtPrice(price)}\nRSI: ${rsiNow?.toFixed(1)}\nAlpha: ${peakAlpha}→${alpha} (dropped ${peakAlpha-alpha}pts from peak)\n${reason}`;
+          await sendTelegram(msg);
+          console.log(`  PEAK_EXIT ${symbol.padEnd(8)} a=${peakAlpha}→${alpha} RSI=${rsiNow?.toFixed(1)} @ $${price} [held ${Math.round(holdMs/60000)}min]`);
+          prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false };
+          return;
+        }
+      }
     }
 
     if (tooEarly && (rsiJustOverbought || nowBelowSell) && hasOpenBuy) {
@@ -219,13 +243,19 @@ async function processCoin(coin, storedHistory) {
       const msg = `[ SELL ALERT ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha} - signal weakened\n${reason}`;
       await sendTelegram(msg);
       console.log(`  SELL      ${symbol.padEnd(8)} a=${alpha} @ $${price}`);
-      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false };
+      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha };
       return;
     }
   }
 
   const keepOpen = prev?.hasOpenBuy && alpha >= cfg.alphaSellThresh;
-  prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: keepOpen || false };
+  prevState[id] = { 
+    alpha, price, rsiValue: rsiNow, 
+    hasOpenBuy: keepOpen || false,
+    buyOpenedAt: keepOpen ? (prev?.buyOpenedAt || Date.now()) : null,
+    peakArmed: keepOpen ? peakArmed : false,
+    peakAlpha: keepOpen ? peakAlpha : alpha,
+  };
 }
 
 async function poll() {
