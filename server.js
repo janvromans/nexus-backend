@@ -1,4 +1,4 @@
-// server.js â€” Express API + starts the poller
+// server.js — Express API + starts the poller
 // Endpoints used by the NEXUS frontend to load trigger history
 
 const express = require('express');
@@ -19,7 +19,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// â”€â”€ Optional API key auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Optional API key auth ─────────────────────────────────────────────────────
 const API_KEY = process.env.API_KEY; // set in Railway env vars
 function auth(req, res, next) {
   if (!API_KEY) return next(); // no key set = open (local dev)
@@ -28,7 +28,7 @@ function auth(req, res, next) {
   next();
 }
 
-// â”€â”€ GET /api/triggers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── GET /api/triggers ─────────────────────────────────────────────────────────
 // Returns trigger log for specified coins
 // Query: ?coins=icp,ethereum,dogecoin&limit=200
 app.get('/api/triggers', auth, async (req, res) => {
@@ -60,7 +60,7 @@ app.get('/api/triggers', auth, async (req, res) => {
   }
 });
 
-// â”€â”€ GET /api/history/:coinId â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── GET /api/history/:coinId ──────────────────────────────────────────────────
 // Returns price + alpha history for a single coin (for charting)
 app.get('/api/history/:coinId', auth, async (req, res) => {
   try {
@@ -72,8 +72,8 @@ app.get('/api/history/:coinId', auth, async (req, res) => {
   }
 });
 
-// â”€â”€ GET /api/status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Health check â€” returns uptime and last poll time
+// ── GET /api/status ───────────────────────────────────────────────────────────
+// Health check — returns uptime and last poll time
 const startTime = new Date();
 app.get('/api/status', async (req, res) => {
   const uptimeSecs = Math.floor((Date.now() - startTime) / 1000);
@@ -86,12 +86,13 @@ app.get('/api/status', async (req, res) => {
     started:  startTime.toISOString(),
     version:  '1.0.0',
     btcTrend: poller.getBtcTrend ? poller.getBtcTrend() : 'UNKNOWN',
+    marketSentiment: poller.getMarketSentiment ? poller.getMarketSentiment() : null,
     coinsTracked: cache.data ? cache.data.length : 0,
     lastPoll: cache.updatedAt || null,
   });
 });
 
-// â”€â”€ GET /api/tracked â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── GET /api/tracked ─────────────────────────────────────────────────────────
 app.get('/api/tracked', auth, async (req, res) => {
   try {
     const rows = await db.getTrackedCoins();
@@ -101,7 +102,7 @@ app.get('/api/tracked', auth, async (req, res) => {
   }
 });
 
-// â”€â”€ POST /api/tracked â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── POST /api/tracked ─────────────────────────────────────────────────────────
 app.post('/api/tracked', auth, async (req, res) => {
   try {
     const { coinId, symbol, name, action } = req.body;
@@ -116,7 +117,7 @@ app.post('/api/tracked', auth, async (req, res) => {
   }
 });
 
-// â”€â”€ GET /api/alltriggers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── GET /api/alltriggers ──────────────────────────────────────────────────────
 app.get('/api/alltriggers', auth, async (req, res) => {
   try {
     const rows = await db.getAllTriggers(2000);
@@ -135,7 +136,7 @@ app.get('/api/alltriggers', auth, async (req, res) => {
   }
 });
 
-// â”€â”€ GET /api/coins â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── GET /api/coins ───────────────────────────────────────────────────────────
 // Returns all current coin prices + 7-day history from DB
 // Frontend uses this instead of calling CoinGecko directly
 app.get('/api/coins', auth, async (req, res) => {
@@ -166,11 +167,11 @@ app.get('/api/coins', auth, async (req, res) => {
   }
 });
 
-// â”€â”€ Start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Start ─────────────────────────────────────────────────────────────────────
 async function main() {
   await db.init();
   app.listen(PORT, () => {
-    console.log(`âœ“ API server listening on port ${PORT}`);
+    console.log(`✓ API server listening on port ${PORT}`);
   });
   await poller.start();
 }
