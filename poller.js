@@ -180,19 +180,22 @@ async function processCoin(coin, storedHistory) {
 
   const prev = prevState[id];
 
+  // Declare shared variables outside if(prev) so they're always in scope
+  const nowAboveBuy  = alpha >= cfg.alphaThresh;
+  const nowBelowSell = alpha <= cfg.alphaSellThresh;
+  let peakArmed = prev?.peakArmed || false;
+  let peakAlpha = prev?.peakAlpha || alpha;
+  let consecutiveAbove = nowAboveBuy ? ((prev?.consecutiveAbove || 0) + 1) : 0;
+
   if (prev) {
     const wasAboveBuy  = prev.alpha >= cfg.alphaThresh;
-    const nowAboveBuy  = alpha      >= cfg.alphaThresh;
     const wasBelowSell = prev.alpha <= cfg.alphaSellThresh;
-    const nowBelowSell = alpha      <= cfg.alphaSellThresh;
     const rsiPrev      = prev.rsiValue || null;
     const rsiOverbought = rsiNow !== null && rsiNow >= 65;
     const rsiJustOverbought = rsiNow !== null && rsiPrev !== null && rsiPrev < 65 && rsiNow >= 65;
     const hasOpenBuy   = prev.hasOpenBuy || false;
 
     // BUY trigger — requires 3 consecutive polls above threshold
-    // Track consecutive count in prevState
-    const consecutiveAbove = (nowAboveBuy ? (prev.consecutiveAbove || 0) + 1 : 0);
     const CONFIRM_NEEDED = 3;
     const confirmed = consecutiveAbove >= CONFIRM_NEEDED;
 
@@ -234,12 +237,10 @@ async function processCoin(coin, storedHistory) {
     const tooEarly = hasOpenBuy && holdMs < MIN_HOLD_MS;
 
     // PEAK EXIT — smarter trailing alpha drop
-    // Phase 1: RSI crosses ≥65 → arm the peak tracker, record peak alpha
-    // Phase 2: while armed, keep updating peak alpha if it rises further
+    // Phase 1: RSI crosses ≥65 → arm the peak tracker
+    // Phase 2: while armed, keep updating peak alpha if it rises
     // Phase 3: fire PEAK EXIT only when alpha drops 10pts from peak
     const PEAK_DROP_TRIGGER = 10;
-    let peakArmed = prev.peakArmed || false;
-    let peakAlpha = prev.peakAlpha || alpha;
 
     if (hasOpenBuy && !tooEarly) {
       if (rsiJustOverbought && !peakArmed) {
@@ -284,7 +285,6 @@ async function processCoin(coin, storedHistory) {
   }
 
   const keepOpen = prev?.hasOpenBuy && alpha >= cfg.alphaSellThresh;
-  const consecutiveAbove = nowAboveBuy ? ((prev?.consecutiveAbove || 0) + 1) : 0;
   prevState[id] = { 
     alpha, price, rsiValue: rsiNow, 
     hasOpenBuy: keepOpen || false,
