@@ -33,6 +33,23 @@ function updateBtcTrend(btcHistory) {
 const coinCache = { data: [], updatedAt: null };
 module.exports.getCoinCache = () => coinCache;
 
+// Market-wide sentiment — suppress BUYs when majority of coins are bearish
+let marketSentiment = { bearishPct: 0, suppressed: false, updatedAt: null };
+
+function updateMarketSentiment(allAlphas) {
+  if (!allAlphas || allAlphas.length < 10) return;
+  const bearish = allAlphas.filter(a => a <= 40).length;
+  const bearishPct = Math.round((bearish / allAlphas.length) * 100);
+  const suppressed = bearishPct >= 60;
+  const prev = marketSentiment.suppressed;
+  marketSentiment = { bearishPct, suppressed, updatedAt: Date.now() };
+  if (prev !== suppressed) {
+    console.log(`  MARKET SENTIMENT: ${bearishPct}% bearish → BUY signals ${suppressed ? 'SUPPRESSED 🔴' : 'ALLOWED 🟢'}`);
+    if (suppressed) sendTelegram(`[ MARKET WARNING ]\n${bearishPct}% of tracked coins are bearish\nNew BUY signals suppressed until market recovers`);
+    else sendTelegram(`[ MARKET RECOVERY ]\nBearish coins dropped to ${bearishPct}%\nBUY signals re-enabled`);
+  }
+}
+
 const BLACKLIST = new Set([
   'tether','usd-coin','binance-usd','dai','true-usd','frax','usdd','gemini-dollar',
   'paxos-standard','neutrino','usdt','usdc','busd','tusd','usdp','gusd',
@@ -173,23 +190,41 @@ async function processCoin(coin, storedHistory) {
     const rsiJustOverbought = rsiNow !== null && rsiPrev !== null && rsiPrev < 65 && rsiNow >= 65;
     const hasOpenBuy   = prev.hasOpenBuy || false;
 
-    // BUY trigger — blocked in bear market unless alpha is very strong (80+)
-    if (!wasAboveBuy && nowAboveBuy) {
+    // BUY trigger — requires 3 consecutive polls above threshold
+    // Track consecutive count in prevState
+    const consecutiveAbove = (nowAboveBuy ? (prev.consecutiveAbove || 0) + 1 : 0);
+    const CONFIRM_NEEDED = 3;
+    const confirmed = consecutiveAbove >= CONFIRM_NEEDED;
+
+    if (!wasAboveBuy && nowAboveBuy && !confirmed) {
+      // Building confirmation — log progress but don't fire yet
+      console.log(`  CONFIRMING ${symbol.padEnd(8)} a=${alpha} [${consecutiveAbove}/${CONFIRM_NEEDED} polls]`);
+      prevState[id] = { ...prevState[id]||{}, alpha, price, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
+      return;
+    }
+
+    if (nowAboveBuy && confirmed && !prev.hasOpenBuy && consecutiveAbove === CONFIRM_NEEDED) {
+      // Confirmed BUY — blocked in bear market unless alpha is very strong (80+)
       if (btcTrend === 'BEAR' && alpha < 80) {
         console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} a=${alpha}`);
-        prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false };
+        prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
+        return;
+      }
+      if (marketSentiment.suppressed) {
+        console.log(`  BUY BLOCKED (market ${marketSentiment.bearishPct}% bearish) ${symbol.padEnd(8)} a=${alpha}`);
+        prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
       const reason = earlyTrend
-        ? `Alpha ${alpha} crossed BUY threshold (Early Trend)${btcTrend === 'BEAR' ? ' [override: alpha≥80]' : ''}`
-        : `Alpha ${alpha} crossed BUY threshold (was ${prev.alpha})${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
+        ? `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} polls, Early Trend)${btcTrend === 'BEAR' ? ' [override: alpha≥80]' : ''}`
+        : `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} consecutive polls)${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
       await db.addTrackedCoin({ coinId: id, symbol, name, autoAdded: true });
       const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : '\nBTC trend: BEAR OVERRIDE (alpha>=80)';
       const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
-      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} @ $${price} [auto-tracked] [BTC:${btcTrend}]`);
-      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), peakAlpha: alpha, peakArmed: false };
+      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} @ $${price} [confirmed ${CONFIRM_NEEDED}x] [BTC:${btcTrend}]`);
+      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), peakAlpha: alpha, peakArmed: false, consecutiveAbove };
       return;
     }
 
@@ -249,12 +284,14 @@ async function processCoin(coin, storedHistory) {
   }
 
   const keepOpen = prev?.hasOpenBuy && alpha >= cfg.alphaSellThresh;
+  const consecutiveAbove = nowAboveBuy ? ((prev?.consecutiveAbove || 0) + 1) : 0;
   prevState[id] = { 
     alpha, price, rsiValue: rsiNow, 
     hasOpenBuy: keepOpen || false,
     buyOpenedAt: keepOpen ? (prev?.buyOpenedAt || Date.now()) : null,
     peakArmed: keepOpen ? peakArmed : false,
     peakAlpha: keepOpen ? peakAlpha : alpha,
+    consecutiveAbove,
   };
 }
 
@@ -287,6 +324,11 @@ async function poll() {
       }
     }
 
+    // Update market-wide sentiment from current alpha scores
+    const allAlphas = Object.values(prevState).map(s => s.alpha).filter(a => a != null);
+    updateMarketSentiment(allAlphas);
+    console.log(`  Market sentiment: ${marketSentiment.bearishPct}% bearish ${marketSentiment.suppressed ? '🔴 SUPPRESSED' : '🟢 OK'}`);
+
     if (Math.random() < 0.017) await db.purgeOldTriggers();
     console.log(`  Done in ${((Date.now() - start) / 1000).toFixed(1)}s`);
   } catch (e) {
@@ -303,3 +345,4 @@ async function start() {
 
 module.exports.start = start;
 module.exports.getBtcTrend = () => btcTrend;
+module.exports.getMarketSentiment = () => marketSentiment;
