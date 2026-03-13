@@ -370,6 +370,7 @@ async function poll() {
 
 async function start() {
   console.log('NEXUS Poller starting (DB-history mode)...');
+  refreshWeakCoinCache();
   await sendTelegram('NEXUS Terminal restarted\nUsing stored DB history for Alpha Score\nPolling every 90s');
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);
