@@ -36,53 +36,21 @@ module.exports.getCoinCache = () => coinCache;
 // Market-wide sentiment — suppress BUYs when majority of coins are bearish
 let marketSentiment = { bearishPct: 0, suppressed: false, updatedAt: null };
 
-// Weak coin cache — tracks coins with poor historical performance for BREAKOUT alerts
+// Weak coins — hardcoded from accuracy tracker (≥5 cycles, <25% WR, negative avg return)
+// Will be replaced with dynamic DB detection in Phase 2 (after 50+ clean cycles)
 const BREAKOUT_ALPHA = 78;
-const WEAK_MIN_CYCLES = 5;
-const WEAK_MAX_WR = 25; // win rate % threshold
-let weakCoinCache = new Set(); // coinIds classified as WEAK
-let weakCacheUpdatedAt = 0;
+const KNOWN_WEAK_COINS = new Set([
+  'night-token','rain','world-liberty-financial','aerodrome-finance',
+  'jupiter','filecoin','tether-gold','arbitrum','pump-fun','non-playable-coin'
+]);
+let weakCoinCache = KNOWN_WEAK_COINS;
+let weakCacheUpdatedAt = Date.now();
 
-async function refreshWeakCoinCache() {
-  try {
-    const triggers = await db.getAllTriggers(5000);
-    // Only consider recent triggers (last 14 days) to avoid old low-quality data
-    const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
-    const recent = triggers.filter(t => new Date(t.fired_at).getTime() > cutoff);
-    const coinStats = {};
-    // Group triggers by coin and compute cycles + win rate
-    for (const t of recent) {
-      if (!coinStats[t.coin_id]) coinStats[t.coin_id] = { buys: [], sells: [] };
-      if (t.type === 'BUY') coinStats[t.coin_id].buys.push(t);
-      if (t.type === 'SELL' || t.type === 'PEAK_EXIT') coinStats[t.coin_id].sells.push(t);
-    }
-    const newWeak = new Set();
-    for (const [coinId, stats] of Object.entries(coinStats)) {
-      const cycles = Math.min(stats.buys.length, stats.sells.length);
-      if (cycles < WEAK_MIN_CYCLES) continue;
-      // Match buys to sells chronologically
-      const sorted = [...stats.buys.map(t=>({...t,side:'buy'})), ...stats.sells.map(t=>({...t,side:'sell'}))]
-        .sort((a,b) => new Date(a.fired_at) - new Date(b.fired_at));
-      let wins = 0, completedCycles = 0, pendingBuy = null;
-      for (const t of sorted) {
-        if (t.side === 'buy') { pendingBuy = t; }
-        else if (pendingBuy) {
-          completedCycles++;
-          if (t.price > pendingBuy.price) wins++;
-          pendingBuy = null;
-        }
-      }
-      if (completedCycles >= WEAK_MIN_CYCLES) {
-        const wr = (wins / completedCycles) * 100;
-        if (wr < WEAK_MAX_WR) newWeak.add(coinId);
-      }
-    }
-    weakCoinCache = newWeak;
-    weakCacheUpdatedAt = Date.now();
-    if (weakCoinCache.size > 0) console.log(`  Weak coin cache: ${weakCoinCache.size} coins flagged (${[...weakCoinCache].join(', ')})`);
-  } catch(e) {
-    console.error('refreshWeakCoinCache error:', e.message);
-  }
+function refreshWeakCoinCache() {
+  // Phase 2: replace with dynamic DB-based detection once 50+ clean cycles accumulated
+  weakCoinCache = KNOWN_WEAK_COINS;
+  weakCacheUpdatedAt = Date.now();
+  console.log(`  Weak coin cache: ${weakCoinCache.size} coins flagged`);
 }
 
 function updateMarketSentiment(allAlphas) {
@@ -368,7 +336,7 @@ async function poll() {
 
     // Refresh weak coin cache every 30 minutes
     if (Date.now() - weakCacheUpdatedAt > 30 * 60 * 1000) {
-      await refreshWeakCoinCache();
+      refreshWeakCoinCache();
     }
 
     // Update BTC trend filter
