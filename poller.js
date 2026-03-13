@@ -46,9 +46,12 @@ let weakCacheUpdatedAt = 0;
 async function refreshWeakCoinCache() {
   try {
     const triggers = await db.getAllTriggers(5000);
+    // Only consider recent triggers (last 14 days) to avoid old low-quality data
+    const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    const recent = triggers.filter(t => new Date(t.fired_at).getTime() > cutoff);
     const coinStats = {};
     // Group triggers by coin and compute cycles + win rate
-    for (const t of triggers) {
+    for (const t of recent) {
       if (!coinStats[t.coin_id]) coinStats[t.coin_id] = { buys: [], sells: [] };
       if (t.type === 'BUY') coinStats[t.coin_id].buys.push(t);
       if (t.type === 'SELL' || t.type === 'PEAK_EXIT') coinStats[t.coin_id].sells.push(t);
