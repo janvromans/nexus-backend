@@ -377,10 +377,146 @@ async function poll() {
   }
 }
 
+// ── Daily Report ─────────────────────────────────────────────────────────────
+// Runs at 20:00 CET every day, sends summary to Telegram
+
+async function computeDailyReport() {
+  try {
+    const triggers = await db.getAllTriggers(5000);
+
+    // Build per-coin cycle stats
+    const coinStats = {};
+    for (const t of triggers) {
+      if (!coinStats[t.coin_id]) coinStats[t.coin_id] = { symbol: t.symbol, buys: [], exits: [] };
+      if (t.type === 'BUY') coinStats[t.coin_id].buys.push(t);
+      if (t.type === 'SELL' || t.type === 'PEAK_EXIT') coinStats[t.coin_id].exits.push(t);
+    }
+
+    const rows = [];
+    for (const [coinId, stats] of Object.entries(coinStats)) {
+      const sorted = [...stats.buys.map(t=>({...t,side:'buy'})), ...stats.exits.map(t=>({...t,side:'exit'}))]
+        .sort((a,b) => new Date(a.fired_at) - new Date(b.fired_at));
+      let wins = 0, losses = 0, totalPnl = 0, pendingBuy = null;
+      for (const t of sorted) {
+        if (t.side === 'buy') { pendingBuy = t; }
+        else if (pendingBuy) {
+          const pnl = ((t.price - pendingBuy.price) / pendingBuy.price) * 100;
+          totalPnl += pnl;
+          if (pnl > 0) wins++; else losses++;
+          pendingBuy = null;
+        }
+      }
+      const cycles = wins + losses;
+      if (cycles === 0) continue;
+      const wr = Math.round((wins / cycles) * 100);
+      const avgPnl = totalPnl / cycles;
+      // Open position
+      const currentPrice = coinCache.data.find(c => c.id === coinId)?.price;
+      const openPnl = pendingBuy && currentPrice
+        ? ((currentPrice - pendingBuy.price) / pendingBuy.price) * 100
+        : null;
+      rows.push({ coinId, symbol: stats.symbol, cycles, wr, avgPnl, totalPnl, openPnl });
+    }
+
+    if (rows.length === 0) return;
+
+    // Overall stats
+    const totalCycles = rows.reduce((a, r) => a + r.cycles, 0);
+    const totalWins   = rows.reduce((a, r) => a + Math.round(r.cycles * r.wr / 100), 0);
+    const overallWr   = Math.round((totalWins / totalCycles) * 100);
+    const overallAvg  = rows.reduce((a, r) => a + r.cycles * r.avgPnl, 0) / totalCycles;
+
+    // Sort by win rate desc
+    rows.sort((a, b) => b.wr - a.wr || b.avgPnl - a.avgPnl);
+
+    // Top performers (≥3 cycles, ≥50% WR, positive avg)
+    const top = rows.filter(r => r.cycles >= 3 && r.wr >= 50 && r.avgPnl > 0).slice(0, 5);
+
+    // Concerns (≥3 cycles, <25% WR or negative avg)
+    const concerns = rows.filter(r => r.cycles >= 3 && (r.wr < 25 || r.avgPnl < -0.5))
+      .sort((a,b) => a.avgPnl - b.avgPnl).slice(0, 4);
+
+    // Big open positions
+    const openPos = rows.filter(r => r.openPnl !== null)
+      .sort((a,b) => Math.abs(b.openPnl) - Math.abs(a.openPnl)).slice(0, 5);
+
+    // Roadmap progress
+    const cleanCyclesEst = Math.max(0, totalCycles - 150); // est. cycles under new settings
+
+    // Build message
+    const date = new Date().toLocaleDateString('en-GB', { day:'numeric', month:'short', timeZone:'Europe/Amsterdam' });
+    let msg = `📊 NEXUS DAILY REPORT — ${date}\n`;
+    msg += `${'─'.repeat(28)}\n`;
+    msg += `Win rate:    ${overallWr}%\n`;
+    msg += `Avg return:  ${overallAvg >= 0 ? '+' : ''}${overallAvg.toFixed(2)}%\n`;
+    msg += `Cycles:      ${totalCycles} total\n`;
+    msg += `BTC trend:   ${btcTrend}\n`;
+    msg += `Market:      ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}]\n`;
+
+    if (top.length > 0) {
+      msg += `\n🏆 TOP PERFORMERS\n`;
+      for (const r of top) {
+        msg += `${r.symbol.padEnd(8)} ${r.wr}% WR  ${r.avgPnl >= 0 ? '+' : ''}${r.avgPnl.toFixed(2)}% avg  ${r.cycles} cycles\n`;
+      }
+    }
+
+    if (concerns.length > 0) {
+      msg += `\n⚠️ CONCERNS\n`;
+      for (const r of concerns) {
+        const openStr = r.openPnl !== null ? `  open ${r.openPnl >= 0 ? '+' : ''}${r.openPnl.toFixed(1)}%` : '';
+        msg += `${r.symbol.padEnd(8)} ${r.wr}% WR  ${r.avgPnl >= 0 ? '+' : ''}${r.avgPnl.toFixed(2)}% avg${openStr}\n`;
+      }
+    }
+
+    if (openPos.length > 0) {
+      msg += `\n💰 OPEN POSITIONS\n`;
+      for (const r of openPos) {
+        if (r.openPnl === null) continue;
+        msg += `${r.symbol.padEnd(8)} ${r.openPnl >= 0 ? '+' : ''}${r.openPnl.toFixed(2)}%\n`;
+      }
+    }
+
+    msg += `\n🗺️ ROADMAP\n`;
+    msg += `Phase 2: ~${cleanCyclesEst} clean cycles (need 50)${cleanCyclesEst >= 45 ? ' ⚡ CLOSE' : cleanCyclesEst >= 50 ? ' ✅ READY' : ''}`;
+
+    await sendTelegram(msg);
+    console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR)`);
+  } catch(e) {
+    console.error('Daily report error:', e.message);
+  }
+}
+
+function scheduleDailyReport() {
+  // Run at 20:00 CET (19:00 UTC) every day
+  const TARGET_HOUR_UTC = 19;
+  const TARGET_MIN_UTC  = 0;
+
+  function msUntilNext() {
+    const now = new Date();
+    const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), TARGET_HOUR_UTC, TARGET_MIN_UTC, 0));
+    if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+    return next - now;
+  }
+
+  function scheduleNext() {
+    const ms = msUntilNext();
+    const hrs = Math.floor(ms / 3600000);
+    const min = Math.floor((ms % 3600000) / 60000);
+    console.log(`  Daily report scheduled in ${hrs}h ${min}m (20:00 CET)`);
+    setTimeout(async () => {
+      await computeDailyReport();
+      scheduleNext(); // reschedule for next day
+    }, ms);
+  }
+
+  scheduleNext();
+}
+
 async function start() {
   console.log('NEXUS Poller starting (DB-history mode)...');
   refreshWeakCoinCache();
   await sendTelegram('NEXUS Terminal restarted\nUsing stored DB history for Alpha Score\nPolling every 90s');
+  scheduleDailyReport();
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);
 }
