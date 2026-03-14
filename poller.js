@@ -33,8 +33,10 @@ function updateBtcTrend(btcHistory) {
 const coinCache = { data: [], updatedAt: null };
 module.exports.getCoinCache = () => coinCache;
 
-// Market-wide sentiment — suppress BUYs when majority of coins are bearish
-let marketSentiment = { bearishPct: 0, suppressed: false, updatedAt: null };
+// Market-wide sentiment — raises BUY bar when market is broadly bearish
+// Tiered: NORMAL(<55% bearish)=α≥75, WARNING(≥55%)=α≥80, SEVERE(≥70%)=α≥85
+// Never fully blocks — strong breakouts always get through
+let marketSentiment = { bearishPct: 0, tier: 'NORMAL', buyOverride: 75, updatedAt: null };
 
 // Weak coins — hardcoded from accuracy tracker (≥5 cycles, <25% WR, negative avg return)
 // Will be replaced with dynamic DB detection in Phase 2 (after 50+ clean cycles)
@@ -53,17 +55,24 @@ function refreshWeakCoinCache() {
   console.log(`  Weak coin cache: ${weakCoinCache.size} coins flagged`);
 }
 
+function getSentimentTier(bearishPct) {
+  if (bearishPct >= 70) return { tier: 'SEVERE',  buyOverride: 85 };
+  if (bearishPct >= 55) return { tier: 'WARNING', buyOverride: 80 };
+  return                       { tier: 'NORMAL',  buyOverride: 75 };
+}
+
 function updateMarketSentiment(allAlphas) {
   if (!allAlphas || allAlphas.length < 10) return;
   const bearish = allAlphas.filter(a => a <= 40).length;
   const bearishPct = Math.round((bearish / allAlphas.length) * 100);
-  const suppressed = bearishPct >= 60;
-  const prev = marketSentiment.suppressed;
-  marketSentiment = { bearishPct, suppressed, updatedAt: Date.now() };
-  if (prev !== suppressed) {
-    console.log(`  MARKET SENTIMENT: ${bearishPct}% bearish → BUY signals ${suppressed ? 'SUPPRESSED 🔴' : 'ALLOWED 🟢'}`);
-    if (suppressed) sendTelegram(`[ MARKET WARNING ]\n${bearishPct}% of tracked coins are bearish\nNew BUY signals suppressed until market recovers`);
-    else sendTelegram(`[ MARKET RECOVERY ]\nBearish coins dropped to ${bearishPct}%\nBUY signals re-enabled`);
+  const { tier, buyOverride } = getSentimentTier(bearishPct);
+  const prev = marketSentiment.tier;
+  marketSentiment = { bearishPct, tier, buyOverride, updatedAt: Date.now() };
+  if (prev !== tier) {
+    console.log(`  MARKET SENTIMENT: ${bearishPct}% bearish → ${prev} → ${tier} (BUY bar now α≥${buyOverride})`);
+    if (tier === 'SEVERE')       sendTelegram(`[ MARKET SEVERE ]\n${bearishPct}% of coins bearish\nBUY bar raised to α≥85 — only strong breakouts`);
+    else if (tier === 'WARNING') sendTelegram(`[ MARKET WARNING ]\n${bearishPct}% of coins bearish\nBUY bar raised to α≥80 — selective entries only`);
+    else                         sendTelegram(`[ MARKET RECOVERY ]\nBearish coins dropped to ${bearishPct}%\nBUY bar back to normal α≥75`);
   }
 }
 
@@ -230,8 +239,8 @@ async function processCoin(coin, storedHistory) {
         prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
-      if (marketSentiment.suppressed) {
-        console.log(`  BUY BLOCKED (market ${marketSentiment.bearishPct}% bearish) ${symbol.padEnd(8)} a=${alpha}`);
+      if (marketSentiment.buyOverride > cfg.alphaThresh && alpha < marketSentiment.buyOverride) {
+        console.log(`  BUY BLOCKED (market ${marketSentiment.bearishPct}% bearish, need α≥${marketSentiment.buyOverride}) ${symbol.padEnd(8)} a=${alpha}`);
         prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
@@ -359,7 +368,7 @@ async function poll() {
     // Update market-wide sentiment from current alpha scores
     const allAlphas = Object.values(prevState).map(s => s.alpha).filter(a => a != null);
     updateMarketSentiment(allAlphas);
-    console.log(`  Market sentiment: ${marketSentiment.bearishPct}% bearish ${marketSentiment.suppressed ? '🔴 SUPPRESSED' : '🟢 OK'}`);
+    console.log(`  Market sentiment: ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}] BUY bar α≥${marketSentiment.buyOverride}`);
 
     if (Math.random() < 0.017) await db.purgeOldTriggers();
     console.log(`  Done in ${((Date.now() - start) / 1000).toFixed(1)}s`);
