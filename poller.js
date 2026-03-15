@@ -253,7 +253,7 @@ async function processCoin(coin, storedHistory) {
       const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
       console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} @ $${price} [confirmed ${CONFIRM_NEEDED}x] [BTC:${btcTrend}]`);
-      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), peakAlpha: alpha, peakArmed: false, consecutiveAbove };
+      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, consecutiveAbove, bigMoverAlerted: [] };
       return;
     }
 
@@ -268,6 +268,28 @@ async function processCoin(coin, storedHistory) {
       await sendTelegram(msg);
       console.log(`  ⚡ BREAKOUT  ${symbol.padEnd(8)} a=${alpha} [WEAK coin spike]`);
     }
+
+    // BIG MOVER alert — fires when open position crosses +10%, +20%, +30%, +50%, +75%, +100%
+    // Tracks which thresholds already alerted to avoid spam
+    const BIG_MOVER_THRESHOLDS = [10, 20, 30, 50, 75, 100];
+    if (hasOpenBuy && prev.buyPrice) {
+      const openPnl = ((price - prev.buyPrice) / prev.buyPrice) * 100;
+      const alerted = prev.bigMoverAlerted || [];
+      const holdMin = prev.buyOpenedAt ? Math.round((Date.now() - prev.buyOpenedAt) / 60000) : 0;
+      const newAlerted = [...alerted];
+      for (const thresh of BIG_MOVER_THRESHOLDS) {
+        if (openPnl >= thresh && !alerted.includes(thresh)) {
+          newAlerted.push(thresh);
+          const msg = `🚀 BIG MOVER - ${symbol}\nOpen position: +${openPnl.toFixed(2)}%\nEntry: $${fmtPrice(prev.buyPrice)} → Now: $${fmtPrice(price)}\nAlpha: ${alpha}\nCycle open: ${holdMin}min\nThreshold crossed: +${thresh}%`;
+          await sendTelegram(msg);
+          console.log(`  🚀 BIG MOVER ${symbol.padEnd(8)} +${openPnl.toFixed(1)}% [crossed +${thresh}%]`);
+        }
+      }
+      if (newAlerted.length > alerted.length) {
+        prevState[id] = { ...prevState[id], bigMoverAlerted: newAlerted };
+      }
+    }
+
     const MIN_HOLD_MS = 25 * 60 * 1000;
     const holdMs = prev.buyOpenedAt ? Date.now() - prev.buyOpenedAt : Infinity;
     const tooEarly = hasOpenBuy && holdMs < MIN_HOLD_MS;
@@ -325,9 +347,11 @@ async function processCoin(coin, storedHistory) {
     alpha, price, rsiValue: rsiNow, 
     hasOpenBuy: keepOpen || false,
     buyOpenedAt: keepOpen ? (prev?.buyOpenedAt || Date.now()) : null,
+    buyPrice: keepOpen ? (prev?.buyPrice || price) : null,
     peakArmed: keepOpen ? peakArmed : false,
     peakAlpha: keepOpen ? peakAlpha : alpha,
     consecutiveAbove,
+    bigMoverAlerted: keepOpen ? (prev?.bigMoverAlerted || []) : [],
   };
 }
 
