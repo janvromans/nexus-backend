@@ -406,7 +406,11 @@ async function poll() {
 
 async function computeDailyReport() {
   try {
-    const triggers = await db.getAllTriggers(5000);
+    const allTriggers = await db.getAllTriggers(5000);
+
+    // Only use last 14 days to reflect current threshold settings
+    const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    const triggers = allTriggers.filter(t => new Date(t.fired_at).getTime() > cutoff);
 
     // Build per-coin cycle stats
     const coinStats = {};
@@ -464,8 +468,9 @@ async function computeDailyReport() {
     const openPos = rows.filter(r => r.openPnl !== null)
       .sort((a,b) => Math.abs(b.openPnl) - Math.abs(a.openPnl)).slice(0, 5);
 
-    // Roadmap progress
-    const cleanCyclesEst = Math.max(0, totalCycles - 150); // est. cycles under new settings
+    // Roadmap progress — totalCycles is already filtered to 14 days = clean cycles
+    const cleanCycles = totalCycles;
+    const phase2Status = cleanCycles >= 50 ? ' ✅ READY' : cleanCycles >= 45 ? ' ⚡ CLOSE' : '';
 
     // Build message
     const date = new Date().toLocaleDateString('en-GB', { day:'numeric', month:'short', timeZone:'Europe/Amsterdam' });
@@ -501,7 +506,7 @@ async function computeDailyReport() {
     }
 
     msg += `\n🗺️ ROADMAP\n`;
-    msg += `Phase 2: ~${cleanCyclesEst} clean cycles (need 50)${cleanCyclesEst >= 45 ? ' ⚡ CLOSE' : cleanCyclesEst >= 50 ? ' ✅ READY' : ''}`;
+    msg += `Phase 2: ${cleanCycles} clean cycles (need 50)${phase2Status}`;
 
     await sendTelegram(msg);
     console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR)`);
