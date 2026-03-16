@@ -406,11 +406,8 @@ async function poll() {
 
 async function computeDailyReport() {
   try {
-    const allTriggers = await db.getAllTriggers(5000);
-
-    // Only use last 14 days to reflect current threshold settings
-    const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
-    const triggers = allTriggers.filter(t => new Date(t.fired_at).getTime() > cutoff);
+    // Only use last 14 days — filtered at DB level for accuracy
+    const triggers = await db.getRecentTriggers(14);
 
     // Build per-coin cycle stats
     const coinStats = {};
