@@ -1,4 +1,4 @@
-// db.js â€” PostgreSQL only (Railway)
+// db.js — PostgreSQL only (Railway)
 
 const { Pool } = require('pg');
 
@@ -45,7 +45,7 @@ async function init() {
       auto_added BOOLEAN DEFAULT TRUE
     );
   `);
-  console.log('âœ“ PostgreSQL connected');
+  console.log('✓ PostgreSQL connected');
 }
 
 async function insertTrigger({ coinId, symbol, type, price, alpha, reason }) {
@@ -69,6 +69,13 @@ async function getAllTriggers(limit = 2000) {
   const { rows } = await pool.query(
     `SELECT * FROM triggers ORDER BY fired_at DESC LIMIT $1`,
     [limit]
+  );
+  return rows;
+}
+
+async function getRecentTriggers(days = 14) {
+  const { rows } = await pool.query(
+    `SELECT * FROM triggers WHERE fired_at > NOW() - INTERVAL '${days} days' ORDER BY fired_at ASC`
   );
   return rows;
 }
@@ -116,7 +123,7 @@ async function purgeOldTriggers() {
 }
 
 module.exports = {
-  init, insertTrigger, getTriggers, getAllTriggers,
+  init, insertTrigger, getTriggers, getAllTriggers, getRecentTriggers,
   insertPricePoint, getPriceHistory,
   addTrackedCoin, removeTrackedCoin, getTrackedCoins,
   purgeOldTriggers
