@@ -138,7 +138,7 @@ app.get('/api/alltriggers', auth, async (req, res) => {
 
 // ── GET /api/coins ───────────────────────────────────────────────────────────
 // Returns all current coin prices + 7-day history from DB
-// Frontend uses this instead of calling CoinGecko directly
+// ?lite=true skips sparkline history (for background refreshes — saves egress)
 app.get('/api/coins', auth, async (req, res) => {
   try {
     const cache = poller.getCoinCache();
@@ -146,7 +146,15 @@ app.get('/api/coins', auth, async (req, res) => {
       return res.json({ coins: [], updatedAt: null });
     }
 
-    // Attach stored price history for each coin
+    const lite = req.query.lite === 'true';
+
+    if (lite) {
+      // Lite mode — just prices, no sparkline history (much smaller payload)
+      const coinsLite = cache.data.map(coin => ({ ...coin, sparkline: [] }));
+      return res.json({ coins: coinsLite, updatedAt: cache.updatedAt });
+    }
+
+    // Full mode — attach stored price history for each coin
     const coinsWithHistory = await Promise.all(
       cache.data.map(async coin => {
         try {
