@@ -407,9 +407,16 @@ async function poll() {
 async function computeDailyReport() {
   try {
     // Only use last 14 days — filtered at DB level for accuracy
-    const triggers = await db.getRecentTriggers(14);
-
-    // Build per-coin cycle stats
+    // Fallback to JS filter if getRecentTriggers not available on deployed version
+    let triggers = [];
+    if (typeof db.getRecentTriggers === 'function') {
+      triggers = await db.getRecentTriggers(14);
+    } else {
+      const all = await db.getAllTriggers(5000);
+      const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
+      triggers = all.filter(t => new Date(t.fired_at).getTime() > cutoff);
+    }
+    console.log(`  [DAILY REPORT] ${triggers.length} triggers from last 14 days`);
     const coinStats = {};
     for (const t of triggers) {
       if (!coinStats[t.coin_id]) coinStats[t.coin_id] = { symbol: t.symbol, buys: [], exits: [] };
