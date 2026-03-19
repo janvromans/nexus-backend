@@ -4,7 +4,6 @@ const { computeAlphaScore, DEFAULT_CFG } = require('./alpha');
 const db = require('./db');
 
 const POLL_INTERVAL_MS = 90 * 1000;
-const COINGECKO_BASE   = 'https://api.coingecko.com/api/v3';
 const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -88,8 +87,6 @@ const BLACKLIST = new Set([
   'leo-token','okb','cronos','nft','ftn',
 ]);
 
-const EXTRA_IDS = ['non-playable-coin','clearpool','verge','velo','zigchain'];
-
 function isJunk(id, price) {
   if (!price || price === 0) return true;
   if (BLACKLIST.has(id)) return true;
@@ -120,58 +117,113 @@ async function sendTelegram(message) {
   }
 }
 
-// Fetch current prices only (much lighter than sparkline requests)
+// ── Bitvavo API ───────────────────────────────────────────────────────────────
+// Public market data — no API key needed for price/ticker data
+const BITVAVO_BASE = 'https://api.bitvavo.com/v2';
+
+// Map Bitvavo market symbols to CoinGecko IDs for DB compatibility
+// Only needed for coins where symbol is ambiguous or different
+const SYMBOL_TO_COINGECKO_ID = {
+  'BTC': 'bitcoin', 'ETH': 'ethereum', 'BNB': 'binancecoin', 'SOL': 'solana',
+  'XRP': 'ripple', 'DOGE': 'dogecoin', 'ADA': 'cardano', 'TRX': 'tron',
+  'AVAX': 'avalanche-2', 'LINK': 'chainlink', 'SHIB': 'shiba-inu',
+  'DOT': 'polkadot', 'LTC': 'litecoin', 'BCH': 'bitcoin-cash',
+  'UNI': 'uniswap', 'PEPE': 'pepe', 'HBAR': 'hedera-hashgraph',
+  'XLM': 'stellar', 'XMR': 'monero', 'OKB': 'okb',
+  'ALGO': 'algorand', 'VET': 'vechain', 'FIL': 'filecoin',
+  'AAVE': 'aave', 'GRT': 'the-graph', 'ATOM': 'cosmos',
+  'ICP': 'internet-computer', 'ETC': 'ethereum-classic',
+  'NEAR': 'near', 'APT': 'aptos', 'OP': 'optimism',
+  'ARB': 'arbitrum', 'MKR': 'maker', 'RNDR': 'render-token',
+  'KAS': 'kaspa', 'TAO': 'bittensor', 'SUI': 'sui',
+  'HYPE': 'hyperliquid', 'WLD': 'worldcoin-wld', 'ZEC': 'zcash',
+  'QNT': 'quant-network', 'NEXO': 'nexo', 'XDC': 'xdce-crowd-sale',
+  'ZRO': 'layerzero', 'ENA': 'ethena', 'JUP': 'jupiter-exchange-solana',
+  'WIF': 'dogwifcoin', 'BONK': 'bonk', 'ONDO': 'ondo-finance',
+  'MNT': 'mantle', 'FET': 'fetch-ai', 'PAXG': 'pax-gold',
+  'XAUT': 'tether-gold', 'DCR': 'decred', 'BDX': 'beldex',
+  'POL': 'polygon-ecosystem-token', 'CRO': 'crypto-com-chain',
+  'WLFI': 'world-liberty-financial', 'FLR': 'flare-networks',
+  'KCS': 'kucoin-shares', 'PUMP': 'pump-fun', 'RAIN': 'rain',
+  'NPC': 'non-playable-coin', 'WBT': 'whitebit', 'KAS': 'kaspa',
+  'STX': 'blockstack', 'TRUMP': 'official-trump', 'PI': 'pi-network',
+};
+
+// Bitvavo symbol → name mapping for display
+const SYMBOL_TO_NAME = {
+  'BTC':'Bitcoin','ETH':'Ethereum','BNB':'BNB','SOL':'Solana','XRP':'XRP',
+  'DOGE':'Dogecoin','ADA':'Cardano','TRX':'TRON','AVAX':'Avalanche',
+  'LINK':'Chainlink','SHIB':'Shiba Inu','DOT':'Polkadot','LTC':'Litecoin',
+  'BCH':'Bitcoin Cash','UNI':'Uniswap','PEPE':'Pepe','HBAR':'Hedera',
+  'XLM':'Stellar','XMR':'Monero','ALGO':'Algorand','VET':'VeChain',
+  'FIL':'Filecoin','AAVE':'Aave','ATOM':'Cosmos','ICP':'Internet Computer',
+  'ETC':'Ethereum Classic','NEAR':'NEAR Protocol','APT':'Aptos',
+  'OP':'Optimism','ARB':'Arbitrum','KAS':'Kaspa','TAO':'Bittensor',
+  'SUI':'Sui','HYPE':'Hyperliquid','WLD':'Worldcoin','ZEC':'Zcash',
+  'QNT':'Quant','NEXO':'Nexo','ENA':'Ethena','JUP':'Jupiter',
+  'BONK':'Bonk','ONDO':'Ondo Finance','MNT':'Mantle','FET':'Fetch.ai',
+  'PAXG':'PAX Gold','XAUT':'Tether Gold','DCR':'Decred','BDX':'Beldex',
+  'POL':'Polygon','CRO':'Cronos','FLR':'Flare','KCS':'KuCoin Token',
+  'WBT':'WhiteBIT Token','TRUMP':'Official Trump','PI':'Pi Network',
+};
+
+function symbolToId(symbol) {
+  return SYMBOL_TO_COINGECKO_ID[symbol] || symbol.toLowerCase();
+}
+
+// Fetch current prices from Bitvavo (EUR markets)
 async function fetchCurrentPrices() {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
   const coins = [];
+  try {
+    // Fetch all ticker prices in one call — no rate limits, no pagination
+    const [tickerRes, ticker24hRes] = await Promise.all([
+      fetch(`${BITVAVO_BASE}/ticker/price`),
+      fetch(`${BITVAVO_BASE}/ticker/24h`),
+    ]);
 
-  // Fetch top 100 in 2 pages
-  for (let page = 1; page <= 2; page++) {
-    try {
-      const url = `${COINGECKO_BASE}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=${page}&price_change_percentage=24h`;
-      const res = await fetch(url);
-      if (!res.ok) { console.warn(`CoinGecko page ${page} failed: ${res.status}`); continue; }
-      const data = await res.json();
-      coins.push(...data
-        .filter(c => !isJunk(c.id, c.current_price))
-        .map(c => ({
-          id:     c.id,
-          symbol: c.symbol?.toUpperCase(),
-          name:   c.name,
-          price:  c.current_price,
-          change: c.price_change_percentage_24h || 0,
-          rank:   c.market_cap_rank || 0,
-        }))
-      );
-    } catch (e) {
-      console.error(`CoinGecko page ${page} error:`, e.message);
+    if (!tickerRes.ok || !ticker24hRes.ok) {
+      console.warn(`  Bitvavo fetch failed: ${tickerRes.status} / ${ticker24hRes.status}`);
+      return coins;
     }
-    if (page < 2) await sleep(3000);
-  }
 
-  // Fetch extra coins every 3rd poll
-  if (pollCount % 3 === 0) {
-    await sleep(4000);
-    try {
-      const url = `${COINGECKO_BASE}/coins/markets?vs_currency=usd&ids=${EXTRA_IDS.join(',')}&price_change_percentage=24h`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        const extras = data.filter(c => !isJunk(c.id, c.current_price)).map(c => ({
-          id: c.id, symbol: c.symbol?.toUpperCase(), name: c.name,
-          price: c.current_price, change: c.price_change_percentage_24h || 0,
-          rank: c.market_cap_rank || 999,
-        }));
-        coins.push(...extras);
-        console.log(`  Extra coins fetched: ${extras.map(c => c.symbol).join(', ')}`);
-      } else {
-        console.warn(`  Extra coins skipped: ${res.status}`);
+    const prices   = await tickerRes.json();
+    const ticker24 = await ticker24hRes.json();
+
+    // Build 24h change map
+    const changeMap = {};
+    for (const t of ticker24) {
+      if (t.market?.endsWith('-EUR')) {
+        const sym = t.market.replace('-EUR', '');
+        const open = parseFloat(t.open);
+        const last = parseFloat(t.last);
+        changeMap[sym] = open > 0 ? ((last - open) / open) * 100 : 0;
       }
-    } catch(e) {
-      console.warn(`  Extra coins error: ${e.message}`);
     }
-  }
 
+    // Build coin list from EUR markets only
+    let rank = 1;
+    for (const p of prices) {
+      if (!p.market?.endsWith('-EUR')) continue;
+      const symbol = p.market.replace('-EUR', '');
+      const price  = parseFloat(p.price);
+      if (!price || isNaN(price)) continue;
+
+      const id   = symbolToId(symbol);
+      const name = SYMBOL_TO_NAME[symbol] || symbol;
+
+      if (isJunk(id, price)) continue;
+
+      coins.push({
+        id, symbol, name, price,
+        change: changeMap[symbol] || 0,
+        rank: rank++,
+      });
+    }
+
+    console.log(`  Fetched ${coins.length} coins from Bitvavo`);
+  } catch (e) {
+    console.error('Bitvavo fetch error:', e.message);
+  }
   return coins;
 }
 
@@ -564,7 +616,7 @@ function scheduleDailyReport() {
 async function start() {
   console.log('NEXUS Poller starting (DB-history mode)...');
   refreshWeakCoinCache();
-  await sendTelegram('NEXUS Terminal restarted\nUsing stored DB history for Alpha Score\nPolling every 90s');
+  await sendTelegram('NEXUS Terminal restarted\nNow using Bitvavo API (real-time, no rate limits)\nPolling every 90s');
   scheduleDailyReport();
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);
