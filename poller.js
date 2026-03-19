@@ -330,6 +330,22 @@ async function processCoin(coin, storedHistory) {
       console.log(`  HOLD_LOCK ${symbol.padEnd(8)} a=${alpha} [${Math.round(holdMs/60000)}/${MIN_HOLD_MS/60000}min]`);
     }
 
+    // HARD STOP-LOSS — exit if open position drops -15% from entry
+    // Fires regardless of alpha score — protects against stuck losing positions
+    const STOP_LOSS_PCT = -15;
+    if (hasOpenBuy && prev.buyPrice) {
+      const openPnl = ((price - prev.buyPrice) / prev.buyPrice) * 100;
+      if (openPnl <= STOP_LOSS_PCT) {
+        const reason = `Stop-loss triggered: ${openPnl.toFixed(2)}% loss from entry $${fmtPrice(prev.buyPrice)} [held ${Math.round(holdMs/60000)}min]`;
+        await db.insertTrigger({ coinId: id, symbol, type: 'SELL', price, alpha, reason });
+        const msg = `[ STOP-LOSS ] ${symbol}\nPrice: $${fmtPrice(price)}\nLoss: ${openPnl.toFixed(2)}% from entry $${fmtPrice(prev.buyPrice)}\nAlpha: ${alpha}\n${reason}`;
+        await sendTelegram(msg);
+        console.log(`  STOP-LOSS ${symbol.padEnd(8)} ${openPnl.toFixed(1)}% @ $${price} [held ${Math.round(holdMs/60000)}min]`);
+        prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha };
+        return;
+      }
+    }
+
     // SELL trigger
     if (!wasBelowSell && nowBelowSell && hasOpenBuy && !tooEarly) {
       const reason = `Alpha ${alpha} dropped below SELL threshold (was ${prev.alpha}) [held ${Math.round(holdMs/60000)}min]`;
