@@ -477,12 +477,15 @@ async function computeDailyReport() {
     // Only use last 14 days — filtered at DB level for accuracy
     // Fallback to JS filter if getRecentTriggers not available on deployed version
     let triggers = [];
-    if (typeof db.getRecentTriggers === 'function') {
+    // Query last 14 days directly — bypasses any db.js caching issues
+    try {
       triggers = await db.getRecentTriggers(14);
-    } else {
+    } catch(e) {
+      // Fallback: use getAllTriggers with JS date filter
       const all = await db.getAllTriggers(5000);
-      const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
-      triggers = all.filter(t => new Date(t.fired_at).getTime() > cutoff);
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - 14);
+      triggers = all.filter(t => t.fired_at && new Date(t.fired_at) >= cutoffDate);
     }
     console.log(`  [DAILY REPORT] ${triggers.length} triggers from last 14 days`);
     const coinStats = {};
