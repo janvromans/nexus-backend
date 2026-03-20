@@ -44,6 +44,17 @@ async function init() {
       added_at   TIMESTAMPTZ DEFAULT NOW(),
       auto_added BOOLEAN DEFAULT TRUE
     );
+
+    CREATE TABLE IF NOT EXISTS open_positions (
+      coin_id       TEXT PRIMARY KEY,
+      symbol        TEXT NOT NULL,
+      buy_price     REAL NOT NULL,
+      buy_alpha     INTEGER NOT NULL,
+      opened_at     TIMESTAMPTZ DEFAULT NOW(),
+      peak_alpha    INTEGER,
+      peak_armed    BOOLEAN DEFAULT FALSE,
+      consecutive_above INTEGER DEFAULT 0
+    );
   `);
   console.log('✓ PostgreSQL connected');
 }
@@ -122,9 +133,30 @@ async function purgeOldTriggers() {
   await pool.query(`DELETE FROM triggers WHERE fired_at < NOW() - INTERVAL '90 days'`);
 }
 
+// ── Open Positions ────────────────────────────────────────────────────────────
+async function saveOpenPosition({ coinId, symbol, buyPrice, buyAlpha, openedAt, peakAlpha, peakArmed, consecutiveAbove }) {
+  await pool.query(
+    `INSERT INTO open_positions (coin_id, symbol, buy_price, buy_alpha, opened_at, peak_alpha, peak_armed, consecutive_above)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     ON CONFLICT (coin_id) DO UPDATE SET
+       buy_price=$3, buy_alpha=$4, opened_at=$5, peak_alpha=$6, peak_armed=$7, consecutive_above=$8`,
+    [coinId, symbol, buyPrice, buyAlpha, openedAt || new Date(), peakAlpha || buyAlpha, peakArmed || false, consecutiveAbove || 0]
+  );
+}
+
+async function deleteOpenPosition(coinId) {
+  await pool.query('DELETE FROM open_positions WHERE coin_id = $1', [coinId]);
+}
+
+async function getAllOpenPositions() {
+  const { rows } = await pool.query('SELECT * FROM open_positions');
+  return rows;
+}
+
 module.exports = {
   init, insertTrigger, getTriggers, getAllTriggers, getRecentTriggers,
   insertPricePoint, getPriceHistory,
   addTrackedCoin, removeTrackedCoin, getTrackedCoins,
-  purgeOldTriggers
+  purgeOldTriggers,
+  saveOpenPosition, deleteOpenPosition, getAllOpenPositions,
 };
