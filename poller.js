@@ -235,6 +235,40 @@ function fmtPrice(price) {
   return price.toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
 
+// ── ATR Volatility Filter ─────────────────────────────────────────────────────
+// Computes Average True Range as % of price over last N candles
+// Returns volatility classification: LOW / HEALTHY / HIGH / EXTREME
+function computeAtrPct(prices, period = 14) {
+  if (!prices || prices.length < period + 1) return null;
+  const recent = prices.slice(-(period + 1));
+  let totalRange = 0;
+  for (let i = 1; i < recent.length; i++) {
+    const high = Math.max(recent[i], recent[i-1]);
+    const low  = Math.min(recent[i], recent[i-1]);
+    totalRange += (high - low);
+  }
+  const atr = totalRange / period;
+  const currentPrice = recent[recent.length - 1];
+  return currentPrice > 0 ? (atr / currentPrice) * 100 : null;
+}
+
+function getVolatilityTier(atrPct) {
+  if (atrPct === null) return { tier: 'UNKNOWN', buyBoost: 0 };
+  if (atrPct < 0.3)   return { tier: 'LOW',     buyBoost: 3  }; // too quiet — raise bar slightly
+  if (atrPct < 2.0)   return { tier: 'HEALTHY', buyBoost: 0  }; // sweet spot — no change
+  if (atrPct < 5.0)   return { tier: 'HIGH',    buyBoost: 4  }; // volatile — raise bar
+  return                     { tier: 'EXTREME', buyBoost: 8  }; // very volatile — raise bar significantly
+}
+
+// ── Market Cap Threshold Modifier ────────────────────────────────────────────
+// Coins with lower rank need stronger signals to trigger BUY
+function getMarketCapBoost(rank) {
+  if (!rank || rank <= 50)  return 0;  // top 50 — standard threshold
+  if (rank <= 100)          return 2;  // rank 51-100 — slightly higher bar
+  if (rank <= 200)          return 4;  // rank 101-200 — higher bar
+  return                           7;  // rank 200+ — significantly higher bar
+}
+
 async function processCoin(coin, storedHistory) {
   const { id, symbol, name, price } = coin;
   if (!price) return;
@@ -254,19 +288,25 @@ async function processCoin(coin, storedHistory) {
   const { alpha, earlyTrend } = computeAlphaScore(history, price, cfg);
   const rsiNow = calcRsi(history);
 
+  // ATR volatility filter — compute effective BUY threshold
+  const atrPct = computeAtrPct(history);
+  const { tier: volTier, buyBoost: volBoost } = getVolatilityTier(atrPct);
+  const mcBoost = getMarketCapBoost(coin.rank);
+  const effectiveBuyThresh = cfg.alphaThresh + volBoost + mcBoost;
+
   await db.insertPricePoint({ coinId: id, price, alpha });
 
   const prev = prevState[id];
 
   // Declare shared variables outside if(prev) so they're always in scope
-  const nowAboveBuy  = alpha >= cfg.alphaThresh;
+  const nowAboveBuy  = alpha >= effectiveBuyThresh;
   const nowBelowSell = alpha <= cfg.alphaSellThresh;
   let peakArmed = prev?.peakArmed || false;
   let peakAlpha = prev?.peakAlpha || alpha;
   let consecutiveAbove = nowAboveBuy ? ((prev?.consecutiveAbove || 0) + 1) : 0;
 
   if (prev) {
-    const wasAboveBuy  = prev.alpha >= cfg.alphaThresh;
+    const wasAboveBuy  = prev.alpha >= effectiveBuyThresh;
     const wasBelowSell = prev.alpha <= cfg.alphaSellThresh;
     const rsiPrev      = prev.rsiValue || null;
     const rsiOverbought = rsiNow !== null && rsiNow >= 65;
@@ -287,24 +327,24 @@ async function processCoin(coin, storedHistory) {
     if (nowAboveBuy && confirmed && !prev.hasOpenBuy && consecutiveAbove === CONFIRM_NEEDED) {
       // Confirmed BUY — blocked in bear market unless alpha is very strong (80+)
       if (btcTrend === 'BEAR' && alpha < 80) {
-        console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} a=${alpha}`);
+        console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh}`);
         prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
-      if (marketSentiment.buyOverride > cfg.alphaThresh && alpha < marketSentiment.buyOverride) {
-        console.log(`  BUY BLOCKED (market ${marketSentiment.bearishPct}% bearish, need α≥${marketSentiment.buyOverride}) ${symbol.padEnd(8)} a=${alpha}`);
+      if (marketSentiment.buyOverride > effectiveBuyThresh && alpha < marketSentiment.buyOverride) {
+        console.log(`  BUY BLOCKED (market ${marketSentiment.bearishPct}% bearish, need α≥${marketSentiment.buyOverride}) ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh}`);
         prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
       const reason = earlyTrend
-        ? `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} polls, Early Trend)${btcTrend === 'BEAR' ? ' [override: alpha≥80]' : ''}`
-        : `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} consecutive polls)${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
+        ? `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} polls, Early Trend) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}]${btcTrend === 'BEAR' ? ' [override: alpha≥80]' : ''}`
+        : `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} consecutive polls) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}]${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
       await db.addTrackedCoin({ coinId: id, symbol, name, autoAdded: true });
       const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : '\nBTC trend: BEAR OVERRIDE (alpha>=80)';
-      const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\n${reason}${btcNote}\nNow tracking for cycle data.`;
+      const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'})\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
-      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} @ $${price} [confirmed ${CONFIRM_NEEDED}x] [BTC:${btcTrend}]`);
+      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh} [ATR:${volTier} MC:${coin.rank||'?'}] @ $${price} [BTC:${btcTrend}]`);
       prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, consecutiveAbove, bigMoverAlerted: [] };
       return;
     }
