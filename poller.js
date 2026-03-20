@@ -345,7 +345,10 @@ async function processCoin(coin, storedHistory) {
       const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'})\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
       console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh} [ATR:${volTier} MC:${coin.rank||'?'}] @ $${price} [BTC:${btcTrend}]`);
-      prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, consecutiveAbove, bigMoverAlerted: [] };
+      const newState = { alpha, price, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, consecutiveAbove, bigMoverAlerted: [] };
+      prevState[id] = newState;
+      // Persist to DB so position survives restarts
+      await db.saveOpenPosition({ coinId: id, symbol, buyPrice: price, buyAlpha: alpha, openedAt: new Date(), peakAlpha: alpha, peakArmed: false, consecutiveAbove });
       return;
     }
 
@@ -413,6 +416,7 @@ async function processCoin(coin, storedHistory) {
           await sendTelegram(msg);
           console.log(`  PEAK_EXIT ${symbol.padEnd(8)} a=${peakAlpha}→${alpha} RSI=${rsiNow?.toFixed(1)} @ $${price} [held ${Math.round(holdMs/60000)}min]`);
           prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false };
+          await db.deleteOpenPosition(id);
           return;
         }
       }
@@ -434,6 +438,7 @@ async function processCoin(coin, storedHistory) {
         await sendTelegram(msg);
         console.log(`  STOP-LOSS ${symbol.padEnd(8)} ${openPnl.toFixed(1)}% @ $${price} [held ${Math.round(holdMs/60000)}min]`);
         prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha };
+        await db.deleteOpenPosition(id);
         return;
       }
     }
@@ -446,6 +451,7 @@ async function processCoin(coin, storedHistory) {
       await sendTelegram(msg);
       console.log(`  SELL      ${symbol.padEnd(8)} a=${alpha} @ $${price}`);
       prevState[id] = { alpha, price, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha };
+      await db.deleteOpenPosition(id);
       return;
     }
   }
@@ -659,6 +665,31 @@ function scheduleDailyReport() {
 async function start() {
   console.log('NEXUS Poller starting (DB-history mode)...');
   refreshWeakCoinCache();
+
+  // Reload open positions from DB — survives restarts
+  try {
+    const openPositions = await db.getAllOpenPositions();
+    for (const pos of openPositions) {
+      prevState[pos.coin_id] = {
+        alpha: pos.buy_alpha,
+        price: pos.buy_price,
+        rsiValue: null,
+        hasOpenBuy: true,
+        buyOpenedAt: new Date(pos.opened_at).getTime(),
+        buyPrice: pos.buy_price,
+        peakAlpha: pos.peak_alpha || pos.buy_alpha,
+        peakArmed: pos.peak_armed || false,
+        consecutiveAbove: pos.consecutive_above || 0,
+        bigMoverAlerted: [],
+      };
+    }
+    if (openPositions.length > 0) {
+      console.log(`  Restored ${openPositions.length} open positions from DB: ${openPositions.map(p => p.symbol).join(', ')}`);
+    }
+  } catch(e) {
+    console.error('Failed to restore open positions:', e.message);
+  }
+
   await sendTelegram('NEXUS Terminal restarted\nNow using Bitvavo API (real-time, no rate limits)\nPolling every 90s');
   scheduleDailyReport();
   await poll();
