@@ -118,9 +118,11 @@ app.post('/api/tracked', auth, async (req, res) => {
 });
 
 // ── GET /api/alltriggers ──────────────────────────────────────────────────────
+// Returns trigger log since Phase 2 (Mar 5) — limits payload size
 app.get('/api/alltriggers', auth, async (req, res) => {
   try {
-    const rows = await db.getAllTriggers(2000);
+    // Only return triggers since Phase 2 deployment — reduces payload significantly
+    const rows = await db.getRecentTriggers(16); // last 16 days covers Mar 5+
     const result = {};
     for (const row of rows) {
       if (!result[row.coin_id]) result[row.coin_id] = [];
@@ -137,8 +139,9 @@ app.get('/api/alltriggers', auth, async (req, res) => {
 });
 
 // ── GET /api/coins ───────────────────────────────────────────────────────────
-// Returns all current coin prices + 7-day history from DB
+// Returns all current coin prices + history from DB
 // ?lite=true skips sparkline history (for background refreshes — saves egress)
+// Full mode only fetches history for top 100 coins to limit payload size
 app.get('/api/coins', auth, async (req, res) => {
   try {
     const cache = poller.getCoinCache();
@@ -154,15 +157,19 @@ app.get('/api/coins', auth, async (req, res) => {
       return res.json({ coins: coinsLite, updatedAt: cache.updatedAt });
     }
 
-    // Full mode — attach stored price history for each coin
+    // Full mode — only fetch history for top 100 coins (by rank)
+    // Remaining coins get empty sparkline — saves ~75% of DB queries and egress
+    const TOP_HISTORY_LIMIT = 100;
+    const sorted = [...cache.data].sort((a, b) => (a.rank || 999) - (b.rank || 999));
+
     const coinsWithHistory = await Promise.all(
-      cache.data.map(async coin => {
+      sorted.map(async (coin, idx) => {
         try {
-          const history = await db.getPriceHistory(coin.id, 168);
-          return {
-            ...coin,
-            sparkline: history.map(h => h.price),
-          };
+          if (idx < TOP_HISTORY_LIMIT) {
+            const history = await db.getPriceHistory(coin.id, 168);
+            return { ...coin, sparkline: history.map(h => h.price) };
+          }
+          return { ...coin, sparkline: [] };
         } catch {
           return { ...coin, sparkline: [] };
         }
