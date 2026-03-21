@@ -260,13 +260,72 @@ function getVolatilityTier(atrPct) {
   return                     { tier: 'EXTREME', buyBoost: 8  }; // very volatile — raise bar significantly
 }
 
+// ── Market Cap Rank Map ───────────────────────────────────────────────────────
+// Hardcoded top 200 by market cap — updated periodically
+// Bitvavo lists coins alphabetically so we need this for correct threshold modifiers
+const MARKET_CAP_RANKS = {
+  'bitcoin':1,'ethereum':2,'tether':3,'binancecoin':4,'ripple':5,
+  'solana':6,'usd-coin':7,'dogecoin':8,'cardano':9,'tron':10,
+  'avalanche-2':11,'chainlink':12,'shiba-inu':13,'stellar':14,'sui':15,
+  'hedera-hashgraph':16,'toncoin':17,'hyperliquid':18,'polkadot':19,
+  'bitcoin-cash':20,'litecoin':21,'uniswap':22,'near':23,'internet-computer':24,
+  'pepe':25,'aptos':26,'monero':27,'ethereum-classic':28,'okb':29,
+  'render-token':30,'fetch-ai':31,'vechain':32,'cosmos':33,'filecoin':34,
+  'arbitrum':35,'optimism':36,'algorand':37,'bittensor':38,'kaspa':39,
+  'cronos':40,'mantle':41,'aave':42,'worldcoin-wld':43,'the-graph':44,
+  'injective-protocol':45,'maker':46,'ondo-finance':47,'flare-networks':48,
+  'quant-network':49,'flow':50,'axie-infinity':51,'decentraland':52,
+  'sandbox':53,'theta-token':54,'gala':55,'chiliz':56,'zcash':57,
+  'neo':58,'kava':59,'dydx':60,'1inch':61,'curve-dao-token':62,
+  'compound-governance-token':63,'balancer':64,'yearn-finance':65,
+  'sushi':66,'bancor':67,'uma':68,'ren':69,'loopring':70,
+  'ethena':71,'jupiter-exchange-solana':72,'jito-governance-token':73,
+  'bonk':74,'dogwifcoin':75,'popcat':76,'brett':77,'mog-coin':78,
+  'turbo':79,'floki':80,'babydoge':81,'neiro-ethereum':82,
+  'official-trump':83,'melania-meme':84,'fartcoin':85,
+  'bittorrent':86,'xdce-crowd-sale':87,'stellar':88,'decred':89,
+  'kaspa':90,'beldex':91,'non-playable-coin':92,'whitebit':93,
+  'pax-gold':94,'tether-gold':95,'paxos-standard':96,
+  'chainlink':97,'band-protocol':98,'dia':99,'api3':100,
+  'woo-network':101,'ocean-protocol':102,'cartesi':103,'lpt':104,
+  'rndr':105,'grt':106,'ankr':107,'bluzelle':108,'nucypher':109,
+  'numeraire':110,'keep-network':111,'uma':112,'nest':113,
+  'synthetix-network-token':114,'mirror-protocol':115,'tornado-cash':116,
+  'republic-protocol':117,'kyber-network-crystal':118,'0x':119,'airswap':120,
+  'worldcoin-wld':121,'layerzero':122,'starknet':123,'scroll':124,
+  'zksync':125,'polygon-ecosystem-token':126,'immutable-x':127,
+  'blur':128,'sudoswap':129,'x2y2':130,'looks-rare':131,
+  'nftx':132,'rarible':133,'axie-infinity':134,'smooth-love-potion':135,
+  'gods-unchained':136,'illuvium':137,'gala':138,'ultra':139,
+  'theta-fuel':140,'theta-token':141,'wax':142,'enjincoin':143,
+  'chiliz':144,'socios':145,'galatasaray-fan-token':146,
+  'paris-saint-germain-fan-token':147,'juventus-fan-token':148,
+  'atletico-de-madrid-fan-token':149,'ac-milan-fan-token':150,
+  'kaspa':151,'beldex':152,'haven-protocol':153,'beam':154,
+  'grin':155,'firo':156,'dusk-network':157,'secret':158,
+  'oasis-network':159,'keep3rv1':160,'pickle-finance':161,
+  'harvest-finance':162,'alpha-finance':163,'88mph':164,
+  'idle':165,'barnbridge':166,'ribbon-finance':167,'dopex':168,
+  'jones-dao':169,'umami-finance':170,'rage-trade':171,
+  'camelot-dex':172,'plutus-dao':173,'radiant-capital':174,
+  'lodestar-finance':175,'rodeo-finance':176,'factor-dao':177,
+  'pendle':178,'equilibria-finance':179,'penpie':180,
+  'swell-network':181,'rocketpool':182,'lido-dao':183,
+  'stader':184,'ankr':185,'frax-share':186,'frax':187,
+  'liquity':188,'liquity-usd':189,'origin-dollar':190,
+  'usdd':191,'true-usd':192,'gemini-dollar':193,'paxos-standard':194,
+  'tether-eurt':195,'celo-dollar':196,'reserve-rights-token':197,
+  'ampleforth':198,'fei-protocol':199,'olympus':200,
+};
+
 // ── Market Cap Threshold Modifier ────────────────────────────────────────────
-// Coins with lower rank need stronger signals to trigger BUY
-function getMarketCapBoost(rank) {
-  if (!rank || rank <= 50)  return 0;  // top 50 — standard threshold
-  if (rank <= 100)          return 2;  // rank 51-100 — slightly higher bar
-  if (rank <= 200)          return 4;  // rank 101-200 — higher bar
-  return                           7;  // rank 200+ — significantly higher bar
+// Uses hardcoded rank map for accurate market cap classification
+function getMarketCapBoost(coinId, fallbackRank) {
+  const rank = MARKET_CAP_RANKS[coinId] || fallbackRank || 999;
+  if (rank <= 50)  return 0;  // top 50 — standard threshold
+  if (rank <= 100) return 2;  // rank 51-100 — slightly higher bar
+  if (rank <= 200) return 4;  // rank 101-200 — higher bar
+  return                   7; // rank 200+ — significantly higher bar
 }
 
 async function processCoin(coin, storedHistory) {
@@ -291,7 +350,7 @@ async function processCoin(coin, storedHistory) {
   // ATR volatility filter — compute effective BUY threshold
   const atrPct = computeAtrPct(history);
   const { tier: volTier, buyBoost: volBoost } = getVolatilityTier(atrPct);
-  const mcBoost = getMarketCapBoost(coin.rank);
+  const mcBoost = getMarketCapBoost(id, coin.rank);
   const effectiveBuyThresh = cfg.alphaThresh + volBoost + mcBoost;
 
   await db.insertPricePoint({ coinId: id, price, alpha });
