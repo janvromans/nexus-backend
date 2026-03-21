@@ -121,13 +121,10 @@ app.post('/api/tracked', auth, async (req, res) => {
 // Returns trigger log since Phase 2 (Mar 5) — limits payload size
 app.get('/api/alltriggers', auth, async (req, res) => {
   try {
-    // Hard cutoff at March 5th — Phase 2 deployment date (v2)
-    // Prevents old low-quality data from polluting accuracy tracker
-    const all = await db.getAllTriggers(5000);
-    const cutoff = new Date('2026-03-05T00:00:00Z');
-    const recent = all.filter(t => t.fired_at && new Date(t.fired_at) >= cutoff);
+    // Direct SQL query with date filter — most reliable approach
+    const rows = await db.getRecentTriggers(17); // 17 days back from today = Mar 4+
     const result = {};
-    for (const row of recent) {
+    for (const row of rows) {
       if (!result[row.coin_id]) result[row.coin_id] = [];
       result[row.coin_id].push({
         type: row.type, price: row.price, alpha: row.alpha,
@@ -135,6 +132,7 @@ app.get('/api/alltriggers', auth, async (req, res) => {
       });
     }
     for (const id of Object.keys(result)) result[id].reverse();
+    console.log(`/api/alltriggers: returned ${rows.length} triggers for ${Object.keys(result).length} coins`);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
