@@ -121,7 +121,7 @@ app.post('/api/tracked', auth, async (req, res) => {
 // Returns trigger log since Phase 2 (Mar 5) — limits payload size
 app.get('/api/alltriggers', auth, async (req, res) => {
   try {
-    // Hard cutoff at March 5th — Phase 2 deployment date
+    // Hard cutoff at March 5th — Phase 2 deployment date (v2)
     // Prevents old low-quality data from polluting accuracy tracker
     const all = await db.getAllTriggers(5000);
     const cutoff = new Date('2026-03-05T00:00:00Z');
