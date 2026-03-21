@@ -580,18 +580,16 @@ async function poll() {
 async function computeDailyReport() {
   try {
     // Only use last 14 days — filtered at DB level for accuracy
-    // Fallback to JS filter if getRecentTriggers not available on deployed version
-    let triggers = [];
-    // Only use triggers since Phase 2 deployment (March 5th) — earlier data used old thresholds
-    // Using fixed cutoff date to ensure consistent clean dataset
+    // Only use triggers since March 10th — matches frontend cutoff
+    // Earlier data used old thresholds and pollutes the analysis
     try {
-      const all = await db.getAllTriggers(5000);
-      const cutoff = new Date('2026-03-05T00:00:00Z');
+      const all = await db.getAllTriggers(2000);
+      const cutoff = new Date('2026-03-10T00:00:00Z');
       triggers = all.filter(t => t.fired_at && new Date(t.fired_at) >= cutoff);
     } catch(e) {
-      triggers = await db.getRecentTriggers(16);
+      triggers = await db.getRecentTriggers(11); // 11 days = Mar 10+
     }
-    console.log(`  [DAILY REPORT] ${triggers.length} triggers since Phase 2 (Mar 5)`);
+    console.log(`  [DAILY REPORT] ${triggers.length} triggers since Mar 10`);
     const coinStats = {};
     for (const t of triggers) {
       if (!coinStats[t.coin_id]) coinStats[t.coin_id] = { symbol: t.symbol, buys: [], exits: [] };
