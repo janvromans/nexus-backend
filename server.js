@@ -118,14 +118,12 @@ app.post('/api/tracked', auth, async (req, res) => {
 });
 
 // ── GET /api/alltriggers ──────────────────────────────────────────────────────
-// Returns trigger log since Mar 1 — captures all cycles including injected positions
+// Returns all trigger log — clean data only (pre-Mar 19 purged via /api/purge)
 app.get('/api/alltriggers', auth, async (req, res) => {
   try {
-    const all = await db.getAllTriggers(3000);
-    const cutoff = new Date('2026-03-01T00:00:00Z');
-    const recent = all.filter(t => t.fired_at && new Date(t.fired_at) >= cutoff);
+    const rows = await db.getAllTriggers(3000);
     const result = {};
-    for (const row of recent) {
+    for (const row of rows) {
       if (!result[row.coin_id]) result[row.coin_id] = [];
       result[row.coin_id].push({
         type: row.type, price: row.price, alpha: row.alpha,
@@ -133,9 +131,24 @@ app.get('/api/alltriggers', auth, async (req, res) => {
       });
     }
     for (const id of Object.keys(result)) result[id].reverse();
-    console.log(`/api/alltriggers: ${recent.length} triggers since Mar 1 for ${Object.keys(result).length} coins`);
+    console.log(`/api/alltriggers: ${rows.length} triggers for ${Object.keys(result).length} coins`);
     res.json(result);
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/purge-old-triggers ──────────────────────────────────────────────
+// ONE-TIME: Delete all triggers before March 19th (pre-Bitvavo data)
+// Run once then never again — permanently cleans the DB
+app.post('/api/purge-old-triggers', async (req, res) => {
+  try {
+    const cutoff = '2026-03-19T00:00:00Z';
+    const result = await db.purgeTriggersBeforeDate(cutoff);
+    console.log(`[PURGE] Deleted ${result.count} triggers before ${cutoff}`);
+    res.json({ ok: true, deleted: result.count, cutoff });
+  } catch (e) {
+    console.error('purge error:', e);
     res.status(500).json({ error: e.message });
   }
 });
