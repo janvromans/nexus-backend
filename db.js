@@ -133,6 +133,14 @@ async function purgeOldTriggers() {
   await pool.query(`DELETE FROM triggers WHERE fired_at < NOW() - INTERVAL '90 days'`);
 }
 
+async function purgeTriggersBeforeDate(isoDate) {
+  const result = await pool.query(
+    `DELETE FROM triggers WHERE fired_at < $1`,
+    [isoDate]
+  );
+  return { count: result.rowCount };
+}
+
 // ── Open Positions ────────────────────────────────────────────────────────────
 async function saveOpenPosition({ coinId, symbol, buyPrice, buyAlpha, openedAt, peakAlpha, peakArmed, consecutiveAbove }) {
   await pool.query(
@@ -157,6 +165,6 @@ module.exports = {
   init, insertTrigger, getTriggers, getAllTriggers, getRecentTriggers,
   insertPricePoint, getPriceHistory,
   addTrackedCoin, removeTrackedCoin, getTrackedCoins,
-  purgeOldTriggers,
+  purgeOldTriggers, purgeTriggersBeforeDate,
   saveOpenPosition, deleteOpenPosition, getAllOpenPositions,
 };
