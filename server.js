@@ -180,21 +180,6 @@ app.get('/api/coins', auth, async (req, res) => {
   }
 });
 
-// ── POST /api/cleanup-positions ──────────────────────────────────────────────
-// Remove incorrectly injected positions causing BIG MOVER spam
-app.post('/api/cleanup-positions', async (req, res) => {
-  try {
-    const badCoins = ['world-liberty-financial', 'jupiter-exchange-solana'];
-    for (const coinId of badCoins) {
-      await db.deleteOpenPosition(coinId);
-    }
-    console.log(`[CLEANUP] Removed bad positions: ${badCoins.join(', ')}`);
-    res.json({ ok: true, removed: badCoins });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 // ── Start ─────────────────────────────────────────────────────────────────────
 async function main() {
   await db.init();
