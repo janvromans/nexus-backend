@@ -118,11 +118,11 @@ app.post('/api/tracked', auth, async (req, res) => {
 });
 
 // ── GET /api/alltriggers ──────────────────────────────────────────────────────
-// Returns trigger log since Mar 10 — when Phase 2 thresholds fully stabilized
+// Returns trigger log since Mar 1 — captures all cycles including injected positions
 app.get('/api/alltriggers', auth, async (req, res) => {
   try {
-    const all = await db.getAllTriggers(2000);
-    const cutoff = new Date('2026-03-19T00:00:00Z');
+    const all = await db.getAllTriggers(3000);
+    const cutoff = new Date('2026-03-01T00:00:00Z');
     const recent = all.filter(t => t.fired_at && new Date(t.fired_at) >= cutoff);
     const result = {};
     for (const row of recent) {
@@ -133,7 +133,7 @@ app.get('/api/alltriggers', auth, async (req, res) => {
       });
     }
     for (const id of Object.keys(result)) result[id].reverse();
-    console.log(`/api/alltriggers: ${recent.length} triggers since Mar 19 for ${Object.keys(result).length} coins`);
+    console.log(`/api/alltriggers: ${recent.length} triggers since Mar 1 for ${Object.keys(result).length} coins`);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
