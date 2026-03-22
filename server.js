@@ -233,8 +233,8 @@ app.get('/api/coins', auth, async (req, res) => {
 });
 
 // ── POST /api/inject-positions ────────────────────────────────────────────────
-// One-time endpoint to inject legacy open positions into DB
-app.post('/api/inject-positions', auth, async (req, res) => {
+// One-time endpoint to inject legacy open positions into DB (no auth — run once)
+app.post('/api/inject-positions', async (req, res) => {
   try {
     const legacyPositions = [
       { coinId:'ethereum',               symbol:'ETH',  buyPrice:2134.92  },
