@@ -138,72 +138,8 @@ app.get('/api/alltriggers', auth, async (req, res) => {
   }
 });
 
-// ── POST /api/purge-old-triggers ──────────────────────────────────────────────
-// ONE-TIME: Delete all triggers before March 19th (pre-Bitvavo data)
-// Run once then never again — permanently cleans the DB
-app.post('/api/purge-old-triggers', async (req, res) => {
-  try {
-    const cutoff = '2026-03-19T00:00:00Z';
-    const result = await db.purgeTriggersBeforeDate(cutoff);
-    console.log(`[PURGE] Deleted ${result.count} triggers before ${cutoff}`);
-    res.json({ ok: true, deleted: result.count, cutoff });
-  } catch (e) {
-    console.error('purge error:', e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── POST /api/inject-positions ────────────────────────────────────────────────
-// One-time endpoint to inject legacy open positions into DB (no auth — run once)
-app.post('/api/inject-positions', async (req, res) => {
-  try {
-    const legacy = [
-      { coinId:'ethereum',               symbol:'ETH',  buyPrice:1969.99, buyAlpha:75 },
-      { coinId:'vechain',                symbol:'VET',  buyPrice:0.006980, buyAlpha:75 },
-      { coinId:'stellar',                symbol:'XLM',  buyPrice:0.180568, buyAlpha:75 },
-      { coinId:'aave',                   symbol:'AAVE', buyPrice:127.448, buyAlpha:75 },
-      { coinId:'sui',                    symbol:'SUI',  buyPrice:1.006663, buyAlpha:75 },
-      { coinId:'bitcoin-cash',           symbol:'BCH',  buyPrice:474.35, buyAlpha:75 },
-      { coinId:'ondo-finance',           symbol:'ONDO', buyPrice:0.292457, buyAlpha:75 },
-      { coinId:'algorand',               symbol:'ALGO', buyPrice:0.097626, buyAlpha:75 },
-      { coinId:'tron',                   symbol:'TRX',  buyPrice:0.287038, buyAlpha:75 },
-      { coinId:'litecoin',               symbol:'LTC',  buyPrice:56.094, buyAlpha:75 },
-      { coinId:'world-liberty-financial',symbol:'WLFI', buyPrice:0.010426, buyAlpha:75 },
-      { coinId:'jupiter-exchange-solana',symbol:'JUP',  buyPrice:0.116416, buyAlpha:75 },
-      { coinId:'worldcoin-wld',          symbol:'WLD',  buyPrice:0.367474, buyAlpha:75 },
-      { coinId:'flare-networks',         symbol:'FLR',  buyPrice:0.008830, buyAlpha:75 },
-      { coinId:'filecoin',               symbol:'FIL',  buyPrice:0.970581, buyAlpha:75 },
-      { coinId:'hedera-hashgraph',       symbol:'HBAR', buyPrice:0.099851, buyAlpha:75 },
-      { coinId:'arbitrum',               symbol:'ARB',  buyPrice:0.104222, buyAlpha:75 },
-      { coinId:'xdce-crowd-sale',        symbol:'XDC',  buyPrice:0.033475, buyAlpha:75 },
-      { coinId:'non-playable-coin',      symbol:'NPC',  buyPrice:0.009520, buyAlpha:75 },
-      { coinId:'kaspa',                  symbol:'KAS',  buyPrice:0.030355, buyAlpha:75 },
-    ];
-
-    const openedAt = new Date('2026-03-01T00:00:00Z'); // approximate open date
-    let injected = 0;
-    for (const pos of legacy) {
-      // Only inject if not already in DB
-      const existing = await db.getAllOpenPositions();
-      const alreadyExists = existing.some(p => p.coin_id === pos.coinId);
-      if (!alreadyExists) {
-        await db.saveOpenPosition({
-          coinId: pos.coinId, symbol: pos.symbol,
-          buyPrice: pos.buyPrice, buyAlpha: pos.buyAlpha,
-          openedAt, peakAlpha: pos.buyAlpha, peakArmed: false, consecutiveAbove: 0,
-        });
-        injected++;
-      }
-    }
-    console.log(`/api/inject-positions: injected ${injected} legacy positions`);
-    res.json({ ok: true, injected, total: legacy.length });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// ── GET /api/coins ───────────────────────────────────────────────────────────
 // Returns all current coin prices + history from DB
-// ?lite=true skips sparkline history (for background refreshes — saves egress)
-// Full mode only fetches history for top 100 coins to limit payload size
 app.get('/api/coins', auth, async (req, res) => {
   try {
     const cache = poller.getCoinCache();
