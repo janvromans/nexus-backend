@@ -155,16 +155,16 @@ app.get('/api/coins', auth, async (req, res) => {
       return res.json({ coins: coinsLite, updatedAt: cache.updatedAt });
     }
 
-    // Full mode — only fetch history for top 100 coins (by rank)
-    // Remaining coins get empty sparkline — saves ~75% of DB queries and egress
-    const TOP_HISTORY_LIMIT = 100;
+    // Full mode — only fetch 24h history for top 50 coins (was 168h for 100)
+    // Saves ~14x egress vs original — sparklines still look good with 24h data
+    const TOP_HISTORY_LIMIT = 50;
     const sorted = [...cache.data].sort((a, b) => (a.rank || 999) - (b.rank || 999));
 
     const coinsWithHistory = await Promise.all(
       sorted.map(async (coin, idx) => {
         try {
           if (idx < TOP_HISTORY_LIMIT) {
-            const history = await db.getPriceHistory(coin.id, 168);
+            const history = await db.getPriceHistory(coin.id, 24); // 24h instead of 168h
             return { ...coin, sparkline: history.map(h => h.price) };
           }
           return { ...coin, sparkline: [] };
