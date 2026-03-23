@@ -547,15 +547,15 @@ async function poll() {
 
     // Update BTC trend filter
     try {
-      const btcHistory = await db.getPriceHistory('bitcoin', 24); // last 24 hours
+      const btcHistory = await db.getPriceHistory('bitcoin', 48);
       updateBtcTrend(btcHistory);
       console.log(`  BTC trend: ${btcTrend}`);
     } catch(e) {}
 
-    // Process each coin using stored DB history (24h only — reduces DB traffic)
+    // Process each coin using stored DB history (48h — enough for reliable signals)
     for (const coin of coins) {
       try {
-        const storedHistory = await db.getPriceHistory(coin.id, 24);
+        const storedHistory = await db.getPriceHistory(coin.id, 48);
         await processCoin(coin, storedHistory);
       } catch(e) {
         console.error(`Error processing ${coin.symbol}:`, e.message);
