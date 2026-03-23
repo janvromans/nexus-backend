@@ -97,7 +97,7 @@ async function insertPricePoint({ coinId, price, alpha }) {
     [coinId, price, alpha]
   );
   await pool.query(
-    `DELETE FROM price_history WHERE coin_id = $1 AND recorded_at < NOW() - INTERVAL '7 days'`,
+    `DELETE FROM price_history WHERE coin_id = $1 AND recorded_at < NOW() - INTERVAL '24 hours'`,
     [coinId]
   );
 }
