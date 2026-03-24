@@ -571,6 +571,10 @@ async function poll() {
     console.log(`  Market sentiment: ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}] BUY bar α≥${marketSentiment.buyOverride}`);
 
     if (Math.random() < 0.017) await db.purgeOldTriggers();
+
+    // System health check — alerts if something is wrong
+    const coinStates = await db.getAllCoinStates();
+    await checkSystemHealth(coins.length, coinStates.length);
     console.log(`  Done in ${((Date.now() - start) / 1000).toFixed(1)}s`);
   } catch (e) {
     console.error('Poll error:', e.message);
@@ -718,6 +722,121 @@ function scheduleDailyReport() {
   scheduleNext();
 }
 
+// ── Morning Health Report (08:00 CET) ────────────────────────────────────────
+async function computeHealthReport() {
+  try {
+    const openPositions = await db.getAllOpenPositions();
+    const coinStates = await db.getAllCoinStates();
+    const triggers = await db.getAllTriggers(100);
+
+    // Count coins with meaningful alpha (not default 50)
+    const meaningfulAlphas = coinStates.filter(s => s.alpha !== 50).length;
+    const bullCoins = coinStates.filter(s => s.alpha >= 60).length;
+    const bearCoins = coinStates.filter(s => s.alpha <= 40).length;
+
+    // Recent triggers (last 24h)
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const recent = triggers.filter(t => new Date(t.fired_at) >= since24h);
+    const recentBuys = recent.filter(t => t.type === 'BUY').length;
+    const recentSells = recent.filter(t => t.type === 'SELL' || t.type === 'PEAK_EXIT').length;
+
+    // Open position summary
+    const openCount = openPositions.length;
+
+    const msg = [
+      `🌅 NEXUS MORNING REPORT — ${new Date().toLocaleDateString('nl-NL', {day:'numeric',month:'short'})}`,
+      `────────────────────────`,
+      `📡 System Status`,
+      `  Coins tracked:  ${coinStates.length}`,
+      `  Alpha scores:   ${meaningfulAlphas} meaningful (≠50)`,
+      `  Bull signals:   ${bullCoins} coins α≥60`,
+      `  Bear signals:   ${bearCoins} coins α≤40`,
+      ``,
+      `📊 Market`,
+      `  BTC trend:      ${btcTrend}`,
+      `  Sentiment:      ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}]`,
+      `  BUY bar:        α≥${marketSentiment.buyOverride}`,
+      ``,
+      `⚡ Last 24h Activity`,
+      `  BUY signals:    ${recentBuys}`,
+      `  SELL signals:   ${recentSells}`,
+      `  Open positions: ${openCount}`,
+      ``,
+      openCount > 0
+        ? `💼 Open: ${openPositions.map(p => p.symbol).join(', ')}`
+        : `💼 No open positions`,
+      ``,
+      bullCoins >= 5
+        ? `🟢 ${bullCoins} coins building — signals possible today`
+        : `🔴 Market weak — patience needed`,
+    ].join('\n');
+
+    await sendTelegram(msg);
+    console.log('  [MORNING REPORT] Sent to Telegram');
+  } catch(e) {
+    console.error('Morning report error:', e.message);
+  }
+}
+
+function scheduleMorningReport() {
+  const TARGET_HOUR_UTC = 7; // 08:00 CET = 07:00 UTC
+  const TARGET_MIN_UTC  = 0;
+
+  function msUntilNext() {
+    const now = new Date();
+    const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), TARGET_HOUR_UTC, TARGET_MIN_UTC, 0));
+    if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+    return next - now;
+  }
+
+  function scheduleNext() {
+    const ms = msUntilNext();
+    const hrs = Math.floor(ms / 3600000);
+    const min = Math.floor((ms % 3600000) / 60000);
+    console.log(`  Morning report scheduled in ${hrs}h ${min}m (08:00 CET)`);
+    setTimeout(async () => {
+      await computeHealthReport();
+      scheduleNext();
+    }, ms);
+  }
+
+  scheduleNext();
+}
+
+// ── System Health Alerts ──────────────────────────────────────────────────────
+// Fires instantly when system detects its own issues
+let lastHealthAlert = 0;
+const HEALTH_ALERT_COOLDOWN = 60 * 60 * 1000; // max 1 alert per hour
+
+async function checkSystemHealth(coinsCount, statesCount) {
+  const now = Date.now();
+  if (now - lastHealthAlert < HEALTH_ALERT_COOLDOWN) return;
+
+  const issues = [];
+
+  // Check if coin states are building correctly
+  if (statesCount < 100) {
+    issues.push(`⚠️ Only ${statesCount} coin states — system warming up`);
+  }
+
+  // Check if sentiment is stuck at extreme
+  if (marketSentiment.bearishPct >= 85) {
+    issues.push(`🔴 Market EXTREME: ${marketSentiment.bearishPct}% bearish — no signals expected`);
+  }
+
+  // Check if Bitvavo fetch is returning fewer coins than expected
+  if (coinsCount < 300) {
+    issues.push(`⚠️ Only ${coinsCount} coins fetched — Bitvavo may have issues`);
+  }
+
+  if (issues.length > 0) {
+    lastHealthAlert = now;
+    const msg = `🔧 NEXUS SYSTEM ALERT\n────────────────────────\n${issues.join('\n')}\n\nSystem is monitoring and will self-recover.`;
+    await sendTelegram(msg);
+    console.log(`  [HEALTH ALERT] ${issues.join(' | ')}`);
+  }
+}
+
 async function start() {
   console.log('NEXUS Poller starting (DB-history mode)...');
   refreshWeakCoinCache();
@@ -770,6 +889,7 @@ async function start() {
 
   await sendTelegram('NEXUS Terminal restarted\nNow using Bitvavo API (real-time, no rate limits)\nPolling every 90s');
   scheduleDailyReport();
+  scheduleMorningReport();
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);
 }
