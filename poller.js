@@ -17,6 +17,28 @@ let btcBearBlockedToday   = 0;
 let sentimentBlockedToday = 0;
 let volumeBlockedToday    = 0;
 
+// ── Relative Strength Detection ──────────────────────────────────────────────
+// Coins up >3% in 24h while market is >60% bearish — move independently of market
+const relStrengthAlertedAt = {}; // coinId → timestamp of last alert
+const REL_STRENGTH_COOLDOWN = 4 * 60 * 60 * 1000; // 4h cooldown per coin
+
+async function checkRelativeStrength(coins) {
+  const { bearishPct, tier } = marketSentiment;
+  if (bearishPct <= 60) return; // market not bearish enough
+  if (btcTrend !== 'BEAR' && tier !== 'SEVERE') return; // only when BTC bear OR sentiment severe
+
+  const now = Date.now();
+  for (const coin of coins) {
+    if (coin.change <= 3) continue; // not up enough
+    const lastAlert = relStrengthAlertedAt[coin.id] || 0;
+    if (now - lastAlert < REL_STRENGTH_COOLDOWN) continue; // cooldown
+    relStrengthAlertedAt[coin.id] = now;
+    const msg = `⭐ RELATIVE STRENGTH - ${coin.symbol}\nPrice: €${fmtPrice(coin.price)}\nUp ${coin.change.toFixed(1)}% in 24h while ${bearishPct}% of market is bearish\nBTC trend: ${btcTrend} | Market: ${tier}`;
+    await sendTelegram(msg);
+    console.log(`  ⭐ REL STR  ${coin.symbol.padEnd(8)} +${coin.change.toFixed(1)}% [${bearishPct}% bearish, BTC:${btcTrend}]`);
+  }
+}
+
 // ── Volume Spike Detection ────────────────────────────────────────────────────
 // Tracks per-poll EUR volume deltas (how much volume traded in each 90s window)
 // Uses Bitvavo's 24h cumulative volumeQuote — delta = current minus previous poll
@@ -705,6 +727,9 @@ async function poll() {
     const allAlphas = Object.values(prevState).map(s => s.alpha).filter(a => a != null);
     updateMarketSentiment(allAlphas);
     console.log(`  Market sentiment: ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}] BUY bar α≥${marketSentiment.buyOverride}`);
+
+    // Relative strength — coins holding up while market is broadly bearish
+    await checkRelativeStrength(coins);
 
     if (Math.random() < 0.017) await db.purgeOldTriggers();
 
