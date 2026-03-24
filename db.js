@@ -104,9 +104,28 @@ async function insertPricePoint({ coinId, price, alpha }) {
     'INSERT INTO price_history (coin_id, price, alpha) VALUES ($1,$2,$3)',
     [coinId, price, alpha]
   );
+}
+
+// Bulk fetch all coin histories in a single query — call once per poll cycle
+// Returns a map: { coinId: [{price, alpha, recorded_at}, ...] } ordered oldest-first
+async function getBulkPriceHistory(hours = 48) {
+  const { rows } = await pool.query(
+    `SELECT coin_id, price, alpha, recorded_at FROM price_history
+     WHERE recorded_at > NOW() - INTERVAL '${hours} hours'
+     ORDER BY coin_id, recorded_at ASC`
+  );
+  const map = {};
+  for (const row of rows) {
+    if (!map[row.coin_id]) map[row.coin_id] = [];
+    map[row.coin_id].push({ price: row.price, alpha: row.alpha, recorded_at: row.recorded_at });
+  }
+  return map;
+}
+
+// Purge all old price history in a single query — replaces per-coin DELETEs
+async function purgePriceHistoryBulk(hours = 48) {
   await pool.query(
-    `DELETE FROM price_history WHERE coin_id = $1 AND recorded_at < NOW() - INTERVAL '48 hours'`,
-    [coinId]
+    `DELETE FROM price_history WHERE recorded_at < NOW() - INTERVAL '${hours} hours'`
   );
 }
 
@@ -188,7 +207,7 @@ async function getAllOpenPositions() {
 
 module.exports = {
   init, insertTrigger, getTriggers, getAllTriggers, getRecentTriggers,
-  insertPricePoint, getPriceHistory,
+  insertPricePoint, getPriceHistory, getBulkPriceHistory, purgePriceHistoryBulk,
   addTrackedCoin, removeTrackedCoin, getTrackedCoins,
   purgeOldTriggers, purgeTriggersBeforeDate,
   saveOpenPosition, deleteOpenPosition, getAllOpenPositions,

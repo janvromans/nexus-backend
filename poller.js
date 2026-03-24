@@ -11,6 +11,10 @@ const prevState = {};
 let cfg = { ...DEFAULT_CFG };
 let pollCount = 0;
 
+// ── Volume Block Counter ──────────────────────────────────────────────────────
+// Counts BUY signals blocked by the volume filter each day — reset in daily report
+let volumeBlockedToday = 0;
+
 // ── Volume Spike Detection ────────────────────────────────────────────────────
 // Tracks per-poll EUR volume deltas (how much volume traded in each 90s window)
 // Uses Bitvavo's 24h cumulative volumeQuote — delta = current minus previous poll
@@ -71,7 +75,9 @@ let marketSentiment = { bearishPct: 0, tier: 'NORMAL', buyOverride: 75, updatedA
 
 // Weak coins — hardcoded from accuracy tracker (≥5 cycles, <25% WR, negative avg return)
 // Will be replaced with dynamic DB detection in Phase 2 (after 50+ clean cycles)
-const BREAKOUT_ALPHA = 78;
+const BREAKOUT_ALPHA   = 78;
+const WEAK_MAX_WR      = 25;  // % win rate threshold for "weak" classification
+const WEAK_MIN_CYCLES  = 5;   // minimum cycles before a coin is flagged weak
 const KNOWN_WEAK_COINS = new Set([
   'night-token','rain','world-liberty-financial','aerodrome-finance',
   'jupiter','filecoin','tether-gold','arbitrum','pump-fun','non-playable-coin'
@@ -318,25 +324,25 @@ const MARKET_CAP_RANKS = {
   'bonk':74,'dogwifcoin':75,'popcat':76,'brett':77,'mog-coin':78,
   'turbo':79,'floki':80,'babydoge':81,'neiro-ethereum':82,
   'official-trump':83,'melania-meme':84,'fartcoin':85,
-  'bittorrent':86,'xdce-crowd-sale':87,'stellar':88,'decred':89,
-  'kaspa':90,'beldex':91,'non-playable-coin':92,'whitebit':93,
+  'bittorrent':86,'xdce-crowd-sale':87,'decred':89,
+  'beldex':91,'non-playable-coin':92,'whitebit':93,
   'pax-gold':94,'tether-gold':95,'paxos-standard':96,
-  'chainlink':97,'band-protocol':98,'dia':99,'api3':100,
+  'band-protocol':98,'dia':99,'api3':100,
   'woo-network':101,'ocean-protocol':102,'cartesi':103,'lpt':104,
   'rndr':105,'grt':106,'ankr':107,'bluzelle':108,'nucypher':109,
-  'numeraire':110,'keep-network':111,'uma':112,'nest':113,
+  'numeraire':110,'keep-network':111,'nest':113,
   'synthetix-network-token':114,'mirror-protocol':115,'tornado-cash':116,
   'republic-protocol':117,'kyber-network-crystal':118,'0x':119,'airswap':120,
-  'worldcoin-wld':121,'layerzero':122,'starknet':123,'scroll':124,
+  'layerzero':122,'starknet':123,'scroll':124,
   'zksync':125,'polygon-ecosystem-token':126,'immutable-x':127,
   'blur':128,'sudoswap':129,'x2y2':130,'looks-rare':131,
-  'nftx':132,'rarible':133,'axie-infinity':134,'smooth-love-potion':135,
-  'gods-unchained':136,'illuvium':137,'gala':138,'ultra':139,
-  'theta-fuel':140,'theta-token':141,'wax':142,'enjincoin':143,
-  'chiliz':144,'socios':145,'galatasaray-fan-token':146,
+  'nftx':132,'rarible':133,'smooth-love-potion':135,
+  'gods-unchained':136,'illuvium':137,'ultra':139,
+  'theta-fuel':140,'wax':142,'enjincoin':143,
+  'socios':145,'galatasaray-fan-token':146,
   'paris-saint-germain-fan-token':147,'juventus-fan-token':148,
   'atletico-de-madrid-fan-token':149,'ac-milan-fan-token':150,
-  'kaspa':151,'beldex':152,'haven-protocol':153,'beam':154,
+  'haven-protocol':153,'beam':154,
   'grin':155,'firo':156,'dusk-network':157,'secret':158,
   'oasis-network':159,'keep3rv1':160,'pickle-finance':161,
   'harvest-finance':162,'alpha-finance':163,'88mph':164,
@@ -346,9 +352,8 @@ const MARKET_CAP_RANKS = {
   'lodestar-finance':175,'rodeo-finance':176,'factor-dao':177,
   'pendle':178,'equilibria-finance':179,'penpie':180,
   'swell-network':181,'rocketpool':182,'lido-dao':183,
-  'stader':184,'ankr':185,'frax-share':186,'frax':187,
+  'stader':184,'frax-share':186,
   'liquity':188,'liquity-usd':189,'origin-dollar':190,
-  'usdd':191,'true-usd':192,'gemini-dollar':193,'paxos-standard':194,
   'tether-eurt':195,'celo-dollar':196,'reserve-rights-token':197,
   'ampleforth':198,'fei-protocol':199,'olympus':200,
 };
@@ -361,6 +366,64 @@ function getMarketCapBoost(coinId, fallbackRank) {
   if (rank <= 100) return 2;  // rank 51-100 — slightly higher bar
   if (rank <= 200) return 4;  // rank 101-200 — higher bar
   return                   7; // rank 200+ — significantly higher bar
+}
+
+// ── Coin-Type Aware Minimum Hold Time ────────────────────────────────────────
+// Large-caps move slowly — hold longer to let them develop.
+// Small-caps and memes pump fast — exit window is tighter.
+function getMinHoldMs(coinId, fallbackRank) {
+  const rank = MARKET_CAP_RANKS[coinId] || fallbackRank || 999;
+  if (rank <= 20)  return 45 * 60 * 1000;  // large-caps: 45 min
+  if (rank <= 100) return 30 * 60 * 1000;  // mid-caps:   30 min
+  return                   15 * 60 * 1000;  // small/meme: 15 min
+}
+
+// ── Coin-Specific Threshold Boosts ───────────────────────────────────────────
+// Derived from historical win rates: weak coins get a raised BUY bar,
+// consistent outperformers get a slightly lower bar.
+// Refreshed every 2h from the triggers table once enough cycles accumulate.
+let coinThresholdBoosts = {};
+let thresholdBoostUpdatedAt = 0;
+
+async function refreshCoinThresholds() {
+  try {
+    let triggers;
+    try { triggers = await db.getAllTriggers(3000); }
+    catch(e) { return; }
+
+    const byCoin = {};
+    for (const t of triggers) {
+      if (!byCoin[t.coin_id]) byCoin[t.coin_id] = [];
+      byCoin[t.coin_id].push(t);
+    }
+
+    const boosts = {};
+    for (const [coinId, ts] of Object.entries(byCoin)) {
+      const sorted = ts.sort((a, b) => new Date(a.fired_at) - new Date(b.fired_at));
+      let wins = 0, losses = 0, pendingBuy = null;
+      for (const t of sorted) {
+        if (t.type === 'BUY') { pendingBuy = t; }
+        else if ((t.type === 'SELL' || t.type === 'PEAK_EXIT') && pendingBuy) {
+          ((t.price - pendingBuy.price) / pendingBuy.price) * 100 > 0 ? wins++ : losses++;
+          pendingBuy = null;
+        }
+      }
+      const cycles = wins + losses;
+      if (cycles < WEAK_MIN_CYCLES) continue;
+      const wr = wins / cycles;
+      if (wr < 0.25)       boosts[coinId] =  10;  // < 25% WR → raise bar +10
+      else if (wr < 0.40)  boosts[coinId] =   5;  // < 40% WR → raise bar +5
+      else if (wr >= 0.65) boosts[coinId] =  -3;  // ≥ 65% WR → lower bar -3 (reward)
+    }
+
+    coinThresholdBoosts = boosts;
+    thresholdBoostUpdatedAt = Date.now();
+    const raised  = Object.values(boosts).filter(b => b > 0).length;
+    const lowered = Object.values(boosts).filter(b => b < 0).length;
+    console.log(`  Coin thresholds refreshed: ${raised} raised, ${lowered} lowered`);
+  } catch(e) {
+    console.error('refreshCoinThresholds error:', e.message);
+  }
 }
 
 async function processCoin(coin, storedHistory) {
@@ -385,8 +448,9 @@ async function processCoin(coin, storedHistory) {
   // ATR volatility filter — compute effective BUY threshold
   const atrPct = computeAtrPct(history);
   const { tier: volTier, buyBoost: volBoost } = getVolatilityTier(atrPct);
-  const mcBoost = getMarketCapBoost(id, coin.rank);
-  const effectiveBuyThresh = cfg.alphaThresh + volBoost + mcBoost;
+  const mcBoost   = getMarketCapBoost(id, coin.rank);
+  const coinBoost = coinThresholdBoosts[id] || 0;
+  const effectiveBuyThresh = cfg.alphaThresh + volBoost + mcBoost + coinBoost;
 
   await db.insertPricePoint({ coinId: id, price, alpha });
 
@@ -424,7 +488,7 @@ async function processCoin(coin, storedHistory) {
       return;
     }
 
-    if (nowAboveBuy && confirmed && !prev.hasOpenBuy && consecutiveAbove === CONFIRM_NEEDED) {
+    if (nowAboveBuy && confirmed && !prev.hasOpenBuy && consecutiveAbove >= CONFIRM_NEEDED) {
       // Confirmed BUY — blocked in bear market unless alpha is very strong (80+)
       if (btcTrend === 'BEAR' && alpha < 80) {
         console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh}`);
@@ -439,10 +503,11 @@ async function processCoin(coin, storedHistory) {
       // Volume spike confirmation — require elevated volume vs. rolling baseline
       const volSpike = hasVolumeSpike(id, coin.volume24h || 0);
       if (!volSpike) {
+        volumeBlockedToday++;
         const deltas = volumeDeltaHistory[id] || [];
         const avgDelta = deltas.length ? deltas.reduce((a,b)=>a+b,0)/deltas.length : 0;
         const curDelta = Math.max(0, (coin.volume24h||0) - (prev.volume24h||0));
-        console.log(`  BUY BLOCKED (no vol spike) ${symbol.padEnd(8)} a=${alpha} vol_delta=${Math.round(curDelta)} avg=${Math.round(avgDelta)} need ${VOLUME_SPIKE_MULT}x`);
+        console.log(`  BUY BLOCKED (no vol spike) ${symbol.padEnd(8)} a=${alpha} vol_delta=${Math.round(curDelta)} avg=${Math.round(avgDelta)} need ${VOLUME_SPIKE_MULT}x [blocked today: ${volumeBlockedToday}]`);
         prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
@@ -450,15 +515,17 @@ async function processCoin(coin, storedHistory) {
       const avgDelta = deltas.length ? deltas.reduce((a,b)=>a+b,0)/deltas.length : 0;
       const curDelta = Math.max(0, (coin.volume24h||0) - (prev.volume24h||0));
       const volRatio = avgDelta > 0 ? (curDelta / avgDelta).toFixed(1) : '?';
+      const coinBoostNote = coinBoost !== 0 ? ` coin:${coinBoost > 0 ? '+' : ''}${coinBoost}` : '';
       const reason = earlyTrend
-        ? `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} polls, Early Trend) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh} vol:${volRatio}x]${btcTrend === 'BEAR' ? ' [override: alpha≥80]' : ''}`
-        : `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} consecutive polls) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh} vol:${volRatio}x]${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
+        ? `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} polls, Early Trend) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}${coinBoostNote} vol:${volRatio}x]${btcTrend === 'BEAR' ? ' [override: alpha≥80]' : ''}`
+        : `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} consecutive polls) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}${coinBoostNote} vol:${volRatio}x]${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
       await db.addTrackedCoin({ coinId: id, symbol, name, autoAdded: true });
       const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : '\nBTC trend: BEAR OVERRIDE (alpha>=80)';
-      const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'})\nVolume: ${volRatio}x avg (spike confirmed)\n${reason}${btcNote}\nNow tracking for cycle data.`;
+      const holdMin = Math.round(MIN_HOLD_MS / 60000);
+      const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'}${coinBoostNote})\nVolume: ${volRatio}x avg (spike confirmed)\nMin hold: ${holdMin}min\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
-      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh} [ATR:${volTier} MC:${coin.rank||'?'}] vol=${volRatio}x @ $${price} [BTC:${btcTrend}]`);
+      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh} [ATR:${volTier} MC:${coin.rank||'?'}${coinBoostNote}] vol=${volRatio}x hold≥${holdMin}m @ $${price} [BTC:${btcTrend}]`);
       const newState = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, consecutiveAbove, bigMoverAlerted: [] };
       prevState[id] = newState;
       // Persist to DB so position survives restarts
@@ -499,7 +566,7 @@ async function processCoin(coin, storedHistory) {
       }
     }
 
-    const MIN_HOLD_MS = 25 * 60 * 1000;
+    const MIN_HOLD_MS = getMinHoldMs(id, coin.rank);
     const holdMs = prev.buyOpenedAt ? Date.now() - prev.buyOpenedAt : Infinity;
     const tooEarly = hasOpenBuy && holdMs < MIN_HOLD_MS;
 
@@ -600,22 +667,30 @@ async function poll() {
       refreshWeakCoinCache();
     }
 
-    // Update BTC trend filter
-    try {
-      const btcHistory = await db.getPriceHistory('bitcoin', 48);
-      updateBtcTrend(btcHistory);
-      console.log(`  BTC trend: ${btcTrend}`);
-    } catch(e) {}
+    // Refresh coin-specific threshold boosts every 2 hours
+    if (Date.now() - thresholdBoostUpdatedAt > 2 * 60 * 60 * 1000) {
+      await refreshCoinThresholds();
+    }
 
-    // Process each coin using stored DB history (48h — enough for reliable signals)
+    // Single bulk fetch — replaces 423 sequential getPriceHistory queries
+    const historyMap = await db.getBulkPriceHistory(48);
+    console.log(`  Loaded price history for ${Object.keys(historyMap).length} coins (bulk)`);
+
+    // Update BTC trend filter — data comes free from the bulk fetch
+    updateBtcTrend(historyMap['bitcoin'] || []);
+    console.log(`  BTC trend: ${btcTrend}`);
+
+    // Process each coin
     for (const coin of coins) {
       try {
-        const storedHistory = await db.getPriceHistory(coin.id, 48);
-        await processCoin(coin, storedHistory);
+        await processCoin(coin, historyMap[coin.id] || []);
       } catch(e) {
         console.error(`Error processing ${coin.symbol}:`, e.message);
       }
     }
+
+    // Purge old price history — single query instead of one per coin
+    await db.purgePriceHistoryBulk(48);
 
     // Update market-wide sentiment from current alpha scores
     const allAlphas = Object.values(prevState).map(s => s.alpha).filter(a => a != null);
@@ -624,9 +699,8 @@ async function poll() {
 
     if (Math.random() < 0.017) await db.purgeOldTriggers();
 
-    // System health check — alerts if something is wrong
-    const coinStates = await db.getAllCoinStates();
-    await checkSystemHealth(coins.length, coinStates.length);
+    // System health check — use prevState size (already in memory, no DB query needed)
+    await checkSystemHealth(coins.length, Object.keys(prevState).length);
     console.log(`  Done in ${((Date.now() - start) / 1000).toFixed(1)}s`);
   } catch (e) {
     console.error('Poll error:', e.message);
@@ -640,6 +714,7 @@ async function computeDailyReport() {
   try {
     // Only use last 14 days — filtered at DB level for accuracy
     // DB is clean (purged pre-Mar 19) — just get all triggers
+    let triggers;
     try {
       triggers = await db.getAllTriggers(3000);
     } catch(e) {
@@ -738,10 +813,20 @@ async function computeDailyReport() {
       }
     }
 
+    msg += `\n🔍 FILTERS (today)\n`;
+    msg += `Vol blocked: ${volumeBlockedToday} BUY signals filtered by volume\n`;
+    const threshAdjusted = Object.keys(coinThresholdBoosts).length;
+    if (threshAdjusted > 0) {
+      const raised  = Object.values(coinThresholdBoosts).filter(b => b > 0).length;
+      const lowered = Object.values(coinThresholdBoosts).filter(b => b < 0).length;
+      msg += `Coin thresholds: ${raised} raised, ${lowered} lowered (${threshAdjusted} total)\n`;
+    }
+
     msg += `\n🗺️ ROADMAP\n`;
     msg += `Phase 2: ${cleanCycles} clean cycles (need 50)${phase2Status}`;
 
     await sendTelegram(msg);
+    volumeBlockedToday = 0; // reset daily counter
     console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR)`);
   } catch(e) {
     console.error('Daily report error:', e.message);
@@ -938,6 +1023,9 @@ async function start() {
   } catch(e) {
     console.error('Failed to restore coin states:', e.message);
   }
+
+  // Load coin-specific threshold boosts from historical trigger data
+  await refreshCoinThresholds();
 
   await sendTelegram('NEXUS Terminal restarted\nNow using Bitvavo API (real-time, no rate limits)\nPolling every 90s');
   scheduleDailyReport();
