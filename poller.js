@@ -11,9 +11,11 @@ const prevState = {};
 let cfg = { ...DEFAULT_CFG };
 let pollCount = 0;
 
-// ── Volume Block Counter ──────────────────────────────────────────────────────
-// Counts BUY signals blocked by the volume filter each day — reset in daily report
-let volumeBlockedToday = 0;
+// ── Signal Block Counters ─────────────────────────────────────────────────────
+// Count confirmed BUY signals blocked at each filter stage — reset in daily report
+let btcBearBlockedToday   = 0;
+let sentimentBlockedToday = 0;
+let volumeBlockedToday    = 0;
 
 // ── Volume Spike Detection ────────────────────────────────────────────────────
 // Tracks per-poll EUR volume deltas (how much volume traded in each 90s window)
@@ -493,12 +495,14 @@ async function processCoin(coin, storedHistory) {
     if (nowAboveBuy && confirmed && !prev.hasOpenBuy && consecutiveAbove >= CONFIRM_NEEDED) {
       // Confirmed BUY — blocked in bear market unless alpha is very strong (80+)
       if (btcTrend === 'BEAR' && alpha < 80) {
-        console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh}`);
+        btcBearBlockedToday++;
+        console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh} [btc-blocked today: ${btcBearBlockedToday}]`);
         prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
       if (marketSentiment.buyOverride > effectiveBuyThresh && alpha < marketSentiment.buyOverride) {
-        console.log(`  BUY BLOCKED (market ${marketSentiment.bearishPct}% bearish, need α≥${marketSentiment.buyOverride}) ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh}`);
+        sentimentBlockedToday++;
+        console.log(`  BUY BLOCKED (market ${marketSentiment.bearishPct}% bearish, need α≥${marketSentiment.buyOverride}) ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh} [sentiment-blocked today: ${sentimentBlockedToday}]`);
         prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
@@ -819,7 +823,9 @@ async function computeDailyReport() {
     }
 
     msg += `\n🔍 FILTERS (today)\n`;
-    msg += `Vol blocked: ${volumeBlockedToday} BUY signals filtered by volume\n`;
+    msg += `BTC bear:    ${btcBearBlockedToday} BUY signals blocked\n`;
+    msg += `Sentiment:   ${sentimentBlockedToday} BUY signals blocked\n`;
+    msg += `Vol spike:   ${volumeBlockedToday} BUY signals blocked\n`;
     const threshAdjusted = Object.keys(coinThresholdBoosts).length;
     if (threshAdjusted > 0) {
       const raised  = Object.values(coinThresholdBoosts).filter(b => b > 0).length;
@@ -831,7 +837,9 @@ async function computeDailyReport() {
     msg += `Phase 2: ${cleanCycles} clean cycles (need 50)${phase2Status}`;
 
     await sendTelegram(msg);
-    volumeBlockedToday = 0; // reset daily counter
+    btcBearBlockedToday   = 0; // reset daily counters
+    sentimentBlockedToday = 0;
+    volumeBlockedToday    = 0;
     console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR)`);
   } catch(e) {
     console.error('Daily report error:', e.message);
@@ -903,6 +911,11 @@ async function computeHealthReport() {
       `  BUY signals:    ${recentBuys}`,
       `  SELL signals:   ${recentSells}`,
       `  Open positions: ${openCount}`,
+      ``,
+      `🔍 Filters (since midnight)`,
+      `  BTC bear:       ${btcBearBlockedToday} blocked`,
+      `  Sentiment:      ${sentimentBlockedToday} blocked`,
+      `  Vol spike:      ${volumeBlockedToday} blocked`,
       ``,
       openCount > 0
         ? `💼 Open: ${openPositions.map(p => p.symbol).join(', ')}`
