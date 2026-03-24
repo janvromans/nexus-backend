@@ -355,6 +355,9 @@ async function processCoin(coin, storedHistory) {
 
   await db.insertPricePoint({ coinId: id, price, alpha });
 
+  // Persist alpha score to DB — survives restarts
+  await db.saveCoinState(id, symbol, alpha, price);
+
   const prev = prevState[id];
 
   // Declare shared variables outside if(prev) so they're always in scope
@@ -741,6 +744,28 @@ async function start() {
     }
   } catch(e) {
     console.error('Failed to restore open positions:', e.message);
+  }
+
+  // Reload coin alpha states from DB — avoids 30min warmup after restarts
+  try {
+    const coinStates = await db.getAllCoinStates();
+    let restored = 0;
+    for (const state of coinStates) {
+      if (!prevState[state.coin_id]) {
+        prevState[state.coin_id] = {
+          alpha: state.alpha,
+          price: state.price,
+          rsiValue: null,
+          hasOpenBuy: false,
+          consecutiveAbove: 0,
+          bigMoverAlerted: [],
+        };
+        restored++;
+      }
+    }
+    if (restored > 0) console.log(`  Restored ${restored} coin alpha states from DB`);
+  } catch(e) {
+    console.error('Failed to restore coin states:', e.message);
   }
 
   await sendTelegram('NEXUS Terminal restarted\nNow using Bitvavo API (real-time, no rate limits)\nPolling every 90s');
