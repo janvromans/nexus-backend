@@ -18,9 +18,11 @@ let sentimentBlockedToday = 0;
 let volumeBlockedToday    = 0;
 
 // ── Relative Strength Detection ──────────────────────────────────────────────
-// Coins up >3% in 24h while market is >60% bearish — move independently of market
-const relStrengthAlertedAt = {}; // coinId → timestamp of last alert
-const REL_STRENGTH_COOLDOWN = 4 * 60 * 60 * 1000; // 4h cooldown per coin
+// Coins up in 24h while market is >60% bearish — move independently of market
+// Two tiers: early (>1.5%) and confirmed (>3%)
+const relStrengthAlertedAt      = {}; // coinId → last confirmed (>3%) alert timestamp
+const earlyRelStrengthAlertedAt = {}; // coinId → last early (>1.5%) alert timestamp
+const REL_STRENGTH_COOLDOWN = 4 * 60 * 60 * 1000; // 4h cooldown per coin per tier
 
 async function checkRelativeStrength(coins) {
   const { bearishPct, tier } = marketSentiment;
@@ -29,14 +31,54 @@ async function checkRelativeStrength(coins) {
 
   const now = Date.now();
   for (const coin of coins) {
-    if (coin.change <= 3) continue; // not up enough
-    const lastAlert = relStrengthAlertedAt[coin.id] || 0;
-    if (now - lastAlert < REL_STRENGTH_COOLDOWN) continue; // cooldown
-    relStrengthAlertedAt[coin.id] = now;
-    const msg = `⭐ RELATIVE STRENGTH - ${coin.symbol}\nPrice: €${fmtPrice(coin.price)}\nUp ${coin.change.toFixed(1)}% in 24h while ${bearishPct}% of market is bearish\nBTC trend: ${btcTrend} | Market: ${tier}`;
-    await sendTelegram(msg);
-    console.log(`  ⭐ REL STR  ${coin.symbol.padEnd(8)} +${coin.change.toFixed(1)}% [${bearishPct}% bearish, BTC:${btcTrend}]`);
+    if (coin.change > 3) {
+      // Confirmed signal — up >3%
+      const lastAlert = relStrengthAlertedAt[coin.id] || 0;
+      if (now - lastAlert < REL_STRENGTH_COOLDOWN) continue;
+      relStrengthAlertedAt[coin.id] = now;
+      const msg = `⭐ RELATIVE STRENGTH - ${coin.symbol}\nPrice: €${fmtPrice(coin.price)}\nUp ${coin.change.toFixed(1)}% in 24h while ${bearishPct}% of market is bearish\nBTC trend: ${btcTrend} | Market: ${tier}`;
+      await sendTelegram(msg);
+      console.log(`  ⭐ REL STR  ${coin.symbol.padEnd(8)} +${coin.change.toFixed(1)}% [${bearishPct}% bearish, BTC:${btcTrend}]`);
+    } else if (coin.change > 1.5) {
+      // Early signal — up 1.5–3%, market conditions just met
+      const lastAlert = earlyRelStrengthAlertedAt[coin.id] || 0;
+      if (now - lastAlert < REL_STRENGTH_COOLDOWN) continue;
+      earlyRelStrengthAlertedAt[coin.id] = now;
+      const msg = `⭐ EARLY RELATIVE STRENGTH - ${coin.symbol}\nPrice: €${fmtPrice(coin.price)}\nUp ${coin.change.toFixed(1)}% in 24h while ${bearishPct}% of market is bearish\nBTC trend: ${btcTrend} | Market: ${tier}`;
+      await sendTelegram(msg);
+      console.log(`  ⭐ EARLY RS ${coin.symbol.padEnd(8)} +${coin.change.toFixed(1)}% [${bearishPct}% bearish, BTC:${btcTrend}]`);
+    }
   }
+}
+
+// ── Intraday Momentum Detection ───────────────────────────────────────────────
+// Fires when a coin rises >1% over the last 3 polls (~4.5 min)
+// Catches fast moves before they become obvious on 24h charts
+const intradayPrices           = {}; // coinId → rolling buffer of last 3 prices
+const intradayMomentumAlertedAt = {}; // coinId → last alert timestamp
+const INTRADAY_HISTORY_LEN  = 3;
+const INTRADAY_THRESHOLD    = 1.0;  // % gain over 3 polls required
+const INTRADAY_COOLDOWN     = 60 * 60 * 1000; // 1h cooldown per coin
+
+function recordIntradayPrice(coinId, price) {
+  if (!intradayPrices[coinId]) intradayPrices[coinId] = [];
+  intradayPrices[coinId].push(price);
+  if (intradayPrices[coinId].length > INTRADAY_HISTORY_LEN) intradayPrices[coinId].shift();
+}
+
+async function checkIntradayMomentum(coinId, symbol, price) {
+  const buf = intradayPrices[coinId];
+  if (!buf || buf.length < INTRADAY_HISTORY_LEN) return;
+  const oldest = buf[0];
+  if (oldest <= 0) return;
+  const pct = ((price - oldest) / oldest) * 100;
+  if (pct < INTRADAY_THRESHOLD) return;
+  const lastAlert = intradayMomentumAlertedAt[coinId] || 0;
+  if (Date.now() - lastAlert < INTRADAY_COOLDOWN) return;
+  intradayMomentumAlertedAt[coinId] = Date.now();
+  const msg = `⚡ INTRADAY MOMENTUM - ${symbol}\nPrice: €${fmtPrice(price)}\n+${pct.toFixed(2)}% in last 3 polls (~4.5 min)\nBTC trend: ${btcTrend} | Market: ${marketSentiment.tier}`;
+  await sendTelegram(msg);
+  console.log(`  ⚡ INTRADAY ${symbol.padEnd(8)} +${pct.toFixed(2)}% [3-poll momentum]`);
 }
 
 // ── Volume Spike Detection ────────────────────────────────────────────────────
@@ -485,6 +527,10 @@ async function processCoin(coin, storedHistory) {
 
   // Record volume delta for spike detection (must happen before prevState update)
   recordVolumeDelta(id, coin.volume24h || 0);
+
+  // Record price for intraday momentum detection
+  recordIntradayPrice(id, price);
+  await checkIntradayMomentum(id, symbol, price);
 
   const prev = prevState[id];
 
