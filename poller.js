@@ -421,8 +421,10 @@ async function refreshCoinThresholds() {
     const raised  = Object.values(boosts).filter(b => b > 0).length;
     const lowered = Object.values(boosts).filter(b => b < 0).length;
     console.log(`  Coin thresholds refreshed: ${raised} raised, ${lowered} lowered`);
+    return { raised, lowered, total: Object.keys(boosts).length };
   } catch(e) {
     console.error('refreshCoinThresholds error:', e.message);
+    return { raised: 0, lowered: 0, total: 0 };
   }
 }
 
@@ -672,9 +674,12 @@ async function poll() {
       await refreshCoinThresholds();
     }
 
-    // Single bulk fetch — replaces 423 sequential getPriceHistory queries
+    // Single bulk fetch — replaces N sequential getPriceHistory queries
+    const bulkStart = Date.now();
     const historyMap = await db.getBulkPriceHistory(48);
-    console.log(`  Loaded price history for ${Object.keys(historyMap).length} coins (bulk)`);
+    const bulkCoins = Object.keys(historyMap).length;
+    const bulkRows  = Object.values(historyMap).reduce((s, h) => s + h.length, 0);
+    console.log(`  History: ${bulkRows} rows / ${bulkCoins} coins in ${Date.now()-bulkStart}ms (bulk, was ~${coins.length} queries)`);
 
     // Update BTC trend filter — data comes free from the bulk fetch
     updateBtcTrend(historyMap['bitcoin'] || []);
@@ -1025,9 +1030,12 @@ async function start() {
   }
 
   // Load coin-specific threshold boosts from historical trigger data
-  await refreshCoinThresholds();
+  const threshStats = await refreshCoinThresholds();
 
-  await sendTelegram('NEXUS Terminal restarted\nNow using Bitvavo API (real-time, no rate limits)\nPolling every 90s');
+  const threshLine = threshStats.total > 0
+    ? `Thresholds: ${threshStats.raised} raised, ${threshStats.lowered} lowered (${threshStats.total} coins)`
+    : `Thresholds: not enough cycles yet (<${WEAK_MIN_CYCLES} per coin)`;
+  await sendTelegram(`NEXUS Terminal restarted\nBitvavo API · polling every 90s\n${threshLine}`);
   scheduleDailyReport();
   scheduleMorningReport();
   await poll();
