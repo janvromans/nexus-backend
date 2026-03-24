@@ -55,6 +55,14 @@ async function init() {
       peak_armed    BOOLEAN DEFAULT FALSE,
       consecutive_above INTEGER DEFAULT 0
     );
+
+    CREATE TABLE IF NOT EXISTS coin_state (
+      coin_id       TEXT PRIMARY KEY,
+      symbol        TEXT NOT NULL,
+      alpha         INTEGER NOT NULL DEFAULT 50,
+      price         REAL NOT NULL DEFAULT 0,
+      updated_at    TIMESTAMPTZ DEFAULT NOW()
+    );
   `);
   console.log('✓ PostgreSQL connected');
 }
@@ -97,7 +105,7 @@ async function insertPricePoint({ coinId, price, alpha }) {
     [coinId, price, alpha]
   );
   await pool.query(
-    `DELETE FROM price_history WHERE coin_id = $1 AND recorded_at < NOW() - INTERVAL '24 hours'`,
+    `DELETE FROM price_history WHERE coin_id = $1 AND recorded_at < NOW() - INTERVAL '48 hours'`,
     [coinId]
   );
 }
@@ -141,6 +149,23 @@ async function purgeTriggersBeforeDate(isoDate) {
   return { count: result.rowCount };
 }
 
+// ── Coin State Persistence ────────────────────────────────────────────────────
+// Saves current alpha/price for a coin — survives restarts
+async function saveCoinState(coinId, symbol, alpha, price) {
+  await pool.query(
+    `INSERT INTO coin_state (coin_id, symbol, alpha, price, updated_at)
+     VALUES ($1,$2,$3,$4,NOW())
+     ON CONFLICT (coin_id) DO UPDATE SET
+       symbol=$2, alpha=$3, price=$4, updated_at=NOW()`,
+    [coinId, symbol, alpha, price]
+  );
+}
+
+async function getAllCoinStates() {
+  const { rows } = await pool.query('SELECT * FROM coin_state');
+  return rows;
+}
+
 // ── Open Positions ────────────────────────────────────────────────────────────
 async function saveOpenPosition({ coinId, symbol, buyPrice, buyAlpha, openedAt, peakAlpha, peakArmed, consecutiveAbove }) {
   await pool.query(
@@ -167,4 +192,5 @@ module.exports = {
   addTrackedCoin, removeTrackedCoin, getTrackedCoins,
   purgeOldTriggers, purgeTriggersBeforeDate,
   saveOpenPosition, deleteOpenPosition, getAllOpenPositions,
+  saveCoinState, getAllCoinStates,
 };
