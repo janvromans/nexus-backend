@@ -63,6 +63,18 @@ async function init() {
       price         REAL NOT NULL DEFAULT 0,
       updated_at    TIMESTAMPTZ DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS candles (
+      coin_id   TEXT NOT NULL,
+      timestamp TIMESTAMPTZ NOT NULL,
+      open      NUMERIC NOT NULL,
+      high      NUMERIC NOT NULL,
+      low       NUMERIC NOT NULL,
+      close     NUMERIC NOT NULL,
+      volume    NUMERIC NOT NULL,
+      PRIMARY KEY (coin_id, timestamp)
+    );
+    CREATE INDEX IF NOT EXISTS idx_candles_coin ON candles(coin_id);
   `);
   console.log('✓ PostgreSQL connected');
 }
@@ -137,6 +149,52 @@ async function getPriceHistory(coinId, hours = 168) {
   return rows;
 }
 
+// ── Candles (1h OHLCV) ────────────────────────────────────────────────────────
+// Upsert batch of candles for one coin — safe to call on every hourly fetch
+async function upsertCandles(coinId, candles) {
+  if (!candles || !candles.length) return;
+  const vals = [], params = [];
+  let p = 1;
+  for (const c of candles) {
+    vals.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+    params.push(coinId, c.timestamp, c.open, c.high, c.low, c.close, c.volume);
+  }
+  await pool.query(
+    `INSERT INTO candles (coin_id, timestamp, open, high, low, close, volume)
+     VALUES ${vals.join(',')}
+     ON CONFLICT (coin_id, timestamp) DO UPDATE SET
+       open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
+       close=EXCLUDED.close, volume=EXCLUDED.volume`,
+    params
+  );
+}
+
+// Bulk fetch all candle histories in a single query — returns map { coinId: [{...}] } oldest-first
+async function getBulkCandles(days = 7) {
+  const { rows } = await pool.query(
+    `SELECT coin_id, timestamp, open, high, low, close, volume FROM candles
+     WHERE timestamp > NOW() - INTERVAL '${days} days'
+     ORDER BY coin_id, timestamp ASC`
+  );
+  const map = {};
+  for (const row of rows) {
+    if (!map[row.coin_id]) map[row.coin_id] = [];
+    map[row.coin_id].push({
+      timestamp: row.timestamp,
+      open: parseFloat(row.open), high: parseFloat(row.high),
+      low: parseFloat(row.low),   close: parseFloat(row.close),
+      volume: parseFloat(row.volume),
+    });
+  }
+  return map;
+}
+
+async function purgeOldCandles(days = 7) {
+  await pool.query(
+    `DELETE FROM candles WHERE timestamp < NOW() - INTERVAL '${days} days'`
+  );
+}
+
 // Tracked coins
 async function addTrackedCoin({ coinId, symbol, name, autoAdded = true }) {
   await pool.query(
@@ -208,6 +266,7 @@ async function getAllOpenPositions() {
 module.exports = {
   init, insertTrigger, getTriggers, getAllTriggers, getRecentTriggers,
   insertPricePoint, getPriceHistory, getBulkPriceHistory, purgePriceHistoryBulk,
+  upsertCandles, getBulkCandles, purgeOldCandles,
   addTrackedCoin, removeTrackedCoin, getTrackedCoins,
   purgeOldTriggers, purgeTriggersBeforeDate,
   saveOpenPosition, deleteOpenPosition, getAllOpenPositions,

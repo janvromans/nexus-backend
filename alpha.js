@@ -59,7 +59,9 @@ function momentum(prices, period = 10) {
   return old > 0 ? ((cur - old) / old) * 100 : null;
 }
 
-function computeAlphaScore(history, price, cfg = DEFAULT_CFG) {
+// candleCloses: optional array of hourly close prices (oldest-first) for EMA50 + MACD.
+// Falls back to 90s price_history when candles aren't available yet.
+function computeAlphaScore(history, price, cfg = DEFAULT_CFG, candleCloses = null) {
   if (!history || history.length < 15 || !price) return { alpha: 50, earlyTrend: false };
   let alpha = 50;
   const sigs = {};
@@ -90,8 +92,9 @@ function computeAlphaScore(history, price, cfg = DEFAULT_CFG) {
     }
   }
 
-  // MACD
-  const mn = macd(history), mp = history.length > 2 ? macd(history.slice(0, -1)) : null;
+  // MACD — use hourly candle closes (12h vs 26h EMAs) when available; fall back to 90s data
+  const macdSrc = (candleCloses && candleCloses.length >= 26) ? candleCloses : history;
+  const mn = macd(macdSrc), mp = macdSrc.length > 2 ? macd(macdSrc.slice(0, -1)) : null;
   if (mn && mp) {
     const freshBullCross = mp.line < 0 && mn.line > 0;
     const freshBearCross = mp.line > 0 && mn.line < 0;
@@ -104,8 +107,9 @@ function computeAlphaScore(history, price, cfg = DEFAULT_CFG) {
     else                                         { alpha -= 2;     sigs.macd = 'BEAR_FLAT'; }
   }
 
-  // EMA
-  const e9 = ema(history, 9), e21 = ema(history, 21), e50v = ema(history, 50);
+  // EMA — e9/e21 from 90s price points (short-term), e50 from hourly candles (long-term trend)
+  const e9 = ema(history, 9), e21 = ema(history, 21);
+  const e50v = (candleCloses && candleCloses.length >= 50) ? ema(candleCloses, 50) : ema(history, 50);
   if (e9 && e21 && e50v) {
     const pb = cfg.alphaEmaPartialBonus || 2;
     if (e9 > e21 && e21 > e50v)      { alpha += pb * 2; sigs.ema = 'FULL_BULL'; }

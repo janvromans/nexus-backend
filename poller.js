@@ -11,6 +11,10 @@ const prevState = {};
 let cfg = { ...DEFAULT_CFG };
 let pollCount = 0;
 
+// ── Hourly Candle Fetch ───────────────────────────────────────────────────────
+let lastCandleFetch = 0;
+let candleMapCache  = {}; // { coinId: [{timestamp,open,high,low,close,volume}] }
+
 // ── Signal Block Counters ─────────────────────────────────────────────────────
 // Count confirmed BUY signals blocked at each filter stage — reset in daily report
 let btcBearBlockedToday   = 0;
@@ -471,7 +475,38 @@ async function refreshCoinThresholds() {
   }
 }
 
-async function processCoin(coin, storedHistory) {
+// Fetch 1h OHLCV candles from Bitvavo for all active coins — runs once per hour.
+// Batches requests (10 at a time) to avoid hammering the API.
+async function fetchAndStoreCandles(coins) {
+  const LIMIT      = 168; // 7 days
+  const BATCH_SIZE = 10;
+  let fetched = 0, failed = 0;
+  for (let i = 0; i < coins.length; i += BATCH_SIZE) {
+    await Promise.all(coins.slice(i, i + BATCH_SIZE).map(async (coin) => {
+      try {
+        const res = await fetch(`${BITVAVO_BASE}/${coin.symbol}-EUR/candles?interval=1h&limit=${LIMIT}`);
+        if (!res.ok) { failed++; return; }
+        const raw = await res.json();
+        if (!Array.isArray(raw) || !raw.length) return;
+        const candles = raw
+          .map(([ts, o, h, l, c, v]) => ({
+            timestamp: new Date(ts),
+            open: parseFloat(o), high: parseFloat(h),
+            low:  parseFloat(l), close: parseFloat(c),
+            volume: parseFloat(v),
+          }))
+          .filter(c => !isNaN(c.open));
+        await db.upsertCandles(coin.id, candles);
+        fetched++;
+      } catch(e) {
+        failed++;
+      }
+    }));
+  }
+  console.log(`  Candles: ${fetched} coins updated, ${failed} failed`);
+}
+
+async function processCoin(coin, storedHistory, candleHistory) {
   const { id, symbol, name, price } = coin;
   if (!price) return;
 
@@ -487,7 +522,12 @@ async function processCoin(coin, storedHistory) {
     return;
   }
 
-  const { alpha, earlyTrend } = computeAlphaScore(history, price, cfg);
+  // Hourly candle closes for EMA50 + MACD — null until candle cache is populated
+  const candleCloses = candleHistory && candleHistory.length >= 26
+    ? candleHistory.map(c => c.close)
+    : null;
+
+  const { alpha, earlyTrend } = computeAlphaScore(history, price, cfg, candleCloses);
   const rsiNow = calcRsi(history);
 
   // ATR volatility filter — compute effective BUY threshold
@@ -727,6 +767,18 @@ async function poll() {
       await refreshCoinThresholds();
     }
 
+    // Fetch hourly candles once per hour — update in-memory cache after fetch
+    if (Date.now() - lastCandleFetch >= 60 * 60 * 1000) {
+      console.log('  Fetching hourly candles...');
+      await fetchAndStoreCandles(coins);
+      candleMapCache = await db.getBulkCandles(7);
+      await db.purgeOldCandles(7);
+      lastCandleFetch = Date.now();
+      const candleCoins = Object.keys(candleMapCache).length;
+      const candleRows  = Object.values(candleMapCache).reduce((s, h) => s + h.length, 0);
+      console.log(`  Candle cache: ${candleRows} rows / ${candleCoins} coins`);
+    }
+
     // Single bulk fetch — replaces N sequential getPriceHistory queries
     const bulkStart = Date.now();
     const historyMap = await db.getBulkPriceHistory(168);
@@ -741,7 +793,7 @@ async function poll() {
     // Process each coin
     for (const coin of coins) {
       try {
-        await processCoin(coin, historyMap[coin.id] || []);
+        await processCoin(coin, historyMap[coin.id] || [], candleMapCache[coin.id] || []);
       } catch(e) {
         console.error(`Error processing ${coin.symbol}:`, e.message);
       }
