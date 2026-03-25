@@ -529,23 +529,33 @@ async function processCoin(coin, storedHistory, candleHistory) {
   const historyPrices = storedHistory.map(h => h.price);
   const history = [...historyPrices, price];
 
-  // Need at least 20 points for reliable signals
-  if (history.length < 20) {
-    // Still store the price point for future use
-    await db.insertPricePoint({ coinId: id, price, alpha: 50 });
-    return;
-  }
-
-  // Hourly candle closes for EMA50 + MACD — null until candle cache is populated
+  // Hourly candle closes — used for EMA50 + MACD, and as history fallback
   const candleCloses = candleHistory && candleHistory.length >= 26
     ? candleHistory.map(c => c.close)
     : null;
 
-  const { alpha, earlyTrend } = computeAlphaScore(history, price, cfg, candleCloses);
-  const rsiNow = calcRsi(history);
+  // Adaptive history: use price_history when available (≥20 points), otherwise fall back
+  // to hourly candle closes. Candles have up to 168h of data fetched from Bitvavo API on
+  // first poll, so alpha works immediately after a DB reset rather than waiting 30+ minutes.
+  let effectiveHistory = history;
+  let effectiveCandleCloses = candleCloses;
+  if (history.length < 20) {
+    if (candleCloses && candleCloses.length >= 20) {
+      // Bootstrap from candle closes — captures pre-restart price action
+      effectiveHistory = [...candleCloses, price];
+      effectiveCandleCloses = null; // candle data is already the primary history
+    } else {
+      // Not enough data in either source — store and wait
+      await db.insertPricePoint({ coinId: id, price, alpha: 50 });
+      return;
+    }
+  }
+
+  const { alpha, earlyTrend } = computeAlphaScore(effectiveHistory, price, cfg, effectiveCandleCloses);
+  const rsiNow = calcRsi(effectiveHistory);
 
   // ATR volatility filter — compute effective BUY threshold
-  const atrPct = computeAtrPct(history);
+  const atrPct = computeAtrPct(effectiveHistory);
   const { tier: volTier, buyBoost: volBoost } = getVolatilityTier(atrPct);
   const mcBoost   = getMarketCapBoost(id, coin.rank);
   const coinBoost = coinThresholdBoosts[id] || 0;
