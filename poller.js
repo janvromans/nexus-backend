@@ -20,8 +20,9 @@ let volumeBlockedToday    = 0;
 // ── Relative Strength Detection ──────────────────────────────────────────────
 // Coins up >3% in 24h while market is >60% bearish — move independently of market
 // Requires 3 consecutive rising polls to filter out brief spikes
-const relStrengthAlertedAt  = {}; // coinId → last alert timestamp
-const relStrengthRisingCount = {}; // coinId → consecutive polls where price increased
+const relStrengthAlertedAt      = {}; // coinId → last strong (>3%) alert timestamp
+const earlyRelStrengthAlertedAt  = {}; // coinId → last early (>1.5%) alert timestamp
+const relStrengthRisingCount     = {}; // coinId → consecutive polls where price increased
 const REL_STRENGTH_COOLDOWN = 24 * 60 * 60 * 1000; // 24h cooldown per coin
 
 async function checkRelativeStrength(coins) {
@@ -31,14 +32,28 @@ async function checkRelativeStrength(coins) {
 
   const now = Date.now();
   for (const coin of coins) {
-    if (coin.change <= 3) continue; // only confirmed signals >3%
     if (relStrengthRisingCount[coin.id] < 3) continue; // must be rising for 3+ consecutive polls
-    const lastAlert = relStrengthAlertedAt[coin.id] || 0;
-    if (now - lastAlert < REL_STRENGTH_COOLDOWN) continue;
-    relStrengthAlertedAt[coin.id] = now;
-    const msg = `⭐ RELATIVE STRENGTH - ${coin.symbol}\nPrice: €${fmtPrice(coin.price)}\nUp ${coin.change.toFixed(1)}% in 24h while ${bearishPct}% of market is bearish\nBTC trend: ${btcTrend} | Market: ${tier}`;
-    await sendTelegram(msg);
-    console.log(`  ⭐ REL STR  ${coin.symbol.padEnd(8)} +${coin.change.toFixed(1)}% [${bearishPct}% bearish, BTC:${btcTrend}]`);
+
+    // Strong signal: >3% in 24h
+    if (coin.change > 3) {
+      const lastAlert = relStrengthAlertedAt[coin.id] || 0;
+      if (now - lastAlert < REL_STRENGTH_COOLDOWN) continue;
+      relStrengthAlertedAt[coin.id] = now;
+      const msg = `⭐ RELATIVE STRENGTH - ${coin.symbol}\nPrice: €${fmtPrice(coin.price)}\nUp ${coin.change.toFixed(1)}% in 24h while ${bearishPct}% of market is bearish\nBTC trend: ${btcTrend} | Market: ${tier}`;
+      await sendTelegram(msg);
+      console.log(`  ⭐ REL STR  ${coin.symbol.padEnd(8)} +${coin.change.toFixed(1)}% [${bearishPct}% bearish, BTC:${btcTrend}]`);
+      continue;
+    }
+
+    // Early signal: >1.5% but not yet at strong threshold
+    if (coin.change > 1.5) {
+      const lastAlert = earlyRelStrengthAlertedAt[coin.id] || 0;
+      if (now - lastAlert < REL_STRENGTH_COOLDOWN) continue;
+      earlyRelStrengthAlertedAt[coin.id] = now;
+      const msg = `⭐ EARLY RELATIVE STRENGTH - ${coin.symbol}\nPrice: €${fmtPrice(coin.price)}\nUp ${coin.change.toFixed(1)}% in 24h while ${bearishPct}% of market is bearish\nBTC trend: ${btcTrend} | Market: ${tier}`;
+      await sendTelegram(msg);
+      console.log(`  ⭐ EARLY RS ${coin.symbol.padEnd(8)} +${coin.change.toFixed(1)}% [${bearishPct}% bearish, BTC:${btcTrend}]`);
+    }
   }
 }
 
@@ -741,6 +756,7 @@ async function poll() {
 
     // Relative strength — coins holding up while market is broadly bearish
     await checkRelativeStrength(coins);
+
 
     if (Math.random() < 0.017) await db.purgeOldTriggers();
 
