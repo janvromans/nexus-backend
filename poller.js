@@ -17,9 +17,10 @@ let candleMapCache  = {}; // { coinId: [{timestamp,open,high,low,close,volume}] 
 
 // ── Signal Block Counters ─────────────────────────────────────────────────────
 // Count confirmed BUY signals blocked at each filter stage — reset in daily report
-let btcBearBlockedToday   = 0;
-let sentimentBlockedToday = 0;
-let volumeBlockedToday    = 0;
+let btcBearBlockedToday      = 0;
+let sentimentBlockedToday    = 0;
+let volumeBlockedToday       = 0;
+let hourlyTrendBlockedToday  = 0;
 
 // ── Relative Strength Detection ──────────────────────────────────────────────
 // Coins up >3% in 24h while market is >60% bearish — move independently of market
@@ -475,6 +476,19 @@ async function refreshCoinThresholds() {
   }
 }
 
+// Returns true when hourly candles show uptrend (EMA9 > EMA21), false for downtrend,
+// null when not enough candle data yet (don't block in that case).
+function hourlyEmaUptrend(candleHistory) {
+  if (!candleHistory || candleHistory.length < 21) return null;
+  const closes = candleHistory.map(c => c.close);
+  const k9 = 2 / 10, k21 = 2 / 22;
+  let e9  = closes.slice(0, 9).reduce((a, b) => a + b, 0) / 9;
+  let e21 = closes.slice(0, 21).reduce((a, b) => a + b, 0) / 21;
+  for (let i = 9;  i < closes.length; i++) e9  = closes[i] * k9  + e9  * (1 - k9);
+  for (let i = 21; i < closes.length; i++) e21 = closes[i] * k21 + e21 * (1 - k21);
+  return e9 > e21;
+}
+
 // Fetch 1h OHLCV candles from Bitvavo for all active coins — runs once per hour.
 // Batches requests (10 at a time) to avoid hammering the API.
 async function fetchAndStoreCandles(coins) {
@@ -603,6 +617,14 @@ async function processCoin(coin, storedHistory, candleHistory) {
         const avgDelta = deltas.length ? deltas.reduce((a,b)=>a+b,0)/deltas.length : 0;
         const curDelta = Math.max(0, (coin.volume24h||0) - (prev.volume24h||0));
         console.log(`  BUY BLOCKED (no vol spike) ${symbol.padEnd(8)} a=${alpha} vol_delta=${Math.round(curDelta)} avg=${Math.round(avgDelta)} need ${VOLUME_SPIKE_MULT}x [blocked today: ${volumeBlockedToday}]`);
+        prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
+        return;
+      }
+      // Multi-timeframe confirmation — hourly candles must show EMA9 > EMA21 uptrend
+      const hourlyUptrend = hourlyEmaUptrend(candleHistory);
+      if (hourlyUptrend === false) {
+        hourlyTrendBlockedToday++;
+        console.log(`  BUY BLOCKED (hourly trend bearish) ${symbol.padEnd(8)} a=${alpha} [hourly-blocked today: ${hourlyTrendBlockedToday}]`);
         prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
@@ -931,6 +953,7 @@ async function computeDailyReport() {
     msg += `BTC bear:    ${btcBearBlockedToday} BUY signals blocked\n`;
     msg += `Sentiment:   ${sentimentBlockedToday} BUY signals blocked\n`;
     msg += `Vol spike:   ${volumeBlockedToday} BUY signals blocked\n`;
+    msg += `Hourly trend:${hourlyTrendBlockedToday} BUY signals blocked\n`;
     const threshAdjusted = Object.keys(coinThresholdBoosts).length;
     if (threshAdjusted > 0) {
       const raised  = Object.values(coinThresholdBoosts).filter(b => b > 0).length;
@@ -942,9 +965,10 @@ async function computeDailyReport() {
     msg += `Phase 2: ${cleanCycles} clean cycles (need 50)${phase2Status}`;
 
     await sendTelegram(msg);
-    btcBearBlockedToday   = 0; // reset daily counters
-    sentimentBlockedToday = 0;
-    volumeBlockedToday    = 0;
+    btcBearBlockedToday      = 0; // reset daily counters
+    sentimentBlockedToday    = 0;
+    volumeBlockedToday       = 0;
+    hourlyTrendBlockedToday  = 0;
     console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR)`);
   } catch(e) {
     console.error('Daily report error:', e.message);
