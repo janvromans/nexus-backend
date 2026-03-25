@@ -540,9 +540,10 @@ async function processCoin(coin, storedHistory, candleHistory) {
   let effectiveHistory = history;
   let effectiveCandleCloses = candleCloses;
   if (history.length < 20) {
-    if (candleCloses && candleCloses.length >= 20) {
-      // Bootstrap from candle closes — captures pre-restart price action
-      effectiveHistory = [...candleCloses, price];
+    if (candleHistory && candleHistory.length >= 20) {
+      // Bootstrap from candle closes — captures pre-restart price action.
+      // Check candleHistory directly (not candleCloses, which requires >= 26).
+      effectiveHistory = [...candleHistory.map(c => c.close), price];
       effectiveCandleCloses = null; // candle data is already the primary history
     } else {
       // Not enough data in either source — store and wait
