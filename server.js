@@ -165,12 +165,12 @@ app.get('/api/alphas', auth, async (req, res) => {
 //   Returns aggregate metrics + per-coin breakdown (no individual trades).
 //
 // Options      : ?threshold=75  override BUY alpha threshold
-//                ?hours=48      history window (max 48 — limited by price_history)
+//                ?hours=168     history window (max 168 — limited by price_history)
 //
 app.get('/api/backtest', auth, async (req, res) => {
   try {
     const coinId    = req.query.coin   || null;
-    const hours     = Math.min(parseInt(req.query.hours) || 48, 48);
+    const hours     = Math.min(parseInt(req.query.hours) || 168, 168);
     const threshold = req.query.threshold ? parseInt(req.query.threshold) : undefined;
     const opts      = { hours, ...(threshold != null ? { threshold } : {}) };
 

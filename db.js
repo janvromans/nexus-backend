@@ -108,7 +108,7 @@ async function insertPricePoint({ coinId, price, alpha }) {
 
 // Bulk fetch all coin histories in a single query — call once per poll cycle
 // Returns a map: { coinId: [{price, alpha, recorded_at}, ...] } ordered oldest-first
-async function getBulkPriceHistory(hours = 48) {
+async function getBulkPriceHistory(hours = 168) {
   const { rows } = await pool.query(
     `SELECT coin_id, price, alpha, recorded_at FROM price_history
      WHERE recorded_at > NOW() - INTERVAL '${hours} hours'
@@ -123,7 +123,7 @@ async function getBulkPriceHistory(hours = 48) {
 }
 
 // Purge all old price history in a single query — replaces per-coin DELETEs
-async function purgePriceHistoryBulk(hours = 48) {
+async function purgePriceHistoryBulk(hours = 168) {
   await pool.query(
     `DELETE FROM price_history WHERE recorded_at < NOW() - INTERVAL '${hours} hours'`
   );
