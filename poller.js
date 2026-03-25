@@ -122,7 +122,8 @@ const WEAK_MAX_WR      = 25;  // % win rate threshold for "weak" classification
 const WEAK_MIN_CYCLES  = 5;   // minimum cycles before a coin is flagged weak
 const KNOWN_WEAK_COINS = new Set([
   'night-token','rain','world-liberty-financial','aerodrome-finance',
-  'jupiter','filecoin','tether-gold','arbitrum','pump-fun','non-playable-coin'
+  'jupiter','filecoin','tether-gold','arbitrum','pump-fun','non-playable-coin',
+  'gwei', // rank unknown (>300) — alpha spikes quickly fade
 ]);
 let weakCoinCache = KNOWN_WEAK_COINS;
 let weakCacheUpdatedAt = Date.now();
