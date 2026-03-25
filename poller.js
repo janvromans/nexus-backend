@@ -62,6 +62,90 @@ async function checkRelativeStrength(coins) {
   }
 }
 
+// ── Early Warning System (Layer 2) ───────────────────────────────────────────
+// Pre-breakout detection: fires ⚡ WATCH THIS alerts before the main signal fires.
+// Patterns: VOLUME_BUILDING, REL_STRENGTH_BUILD, RESISTANCE_BREAK
+// Gated to WARNING/SEVERE market conditions — most valuable when market is weak.
+const EW_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h per coin per pattern
+const ewLastFired    = {};  // { 'coinId:pattern' → timestamp }
+
+function ewCooledDown(coinId, pattern) {
+  return (Date.now() - (ewLastFired[`${coinId}:${pattern}`] || 0)) >= EW_COOLDOWN_MS;
+}
+function ewMarkFired(coinId, pattern) {
+  ewLastFired[`${coinId}:${pattern}`] = Date.now();
+}
+
+async function checkEarlyWarnings(coins, historyMap) {
+  const { tier, bearishPct } = marketSentiment;
+  if (tier === 'NORMAL') return; // only WARNING (≥55%) or SEVERE (≥70%)
+
+  const cutoff24h = Date.now() - 24 * 60 * 60 * 1000;
+
+  for (const coin of coins) {
+    const { id, symbol, price, change } = coin;
+    if (isJunk(id, price)) continue;
+
+    const storedHistory = historyMap[id] || [];
+    const prevPrice     = prevState[id]?.price;
+
+    // ── Pattern 1: VOLUME BUILDING ─────────────────────────────────────────
+    // Volume delta >150% above 20-poll average AND price not already pumped >5%
+    if (ewCooledDown(id, 'VOLUME_BUILDING') && change > -2 && change < 5) {
+      const deltas = volumeDeltaHistory[id];
+      if (deltas && deltas.length >= 16) {
+        const currentDelta = deltas[deltas.length - 1]; // recorded this cycle
+        const baseline     = deltas.slice(-21, -1);     // up to 20 prior polls
+        if (currentDelta > 0 && baseline.length >= 15) {
+          const avg = baseline.reduce((a, b) => a + b, 0) / baseline.length;
+          if (avg > 0 && currentDelta > avg * 2.5) {
+            const ratio = (currentDelta / avg).toFixed(1);
+            ewMarkFired(id, 'VOLUME_BUILDING');
+            const msg = `⚡ VOLUME BUILDING - ${symbol}\nVolume spike detected before price move. Watch for breakout.\nVol ratio: ${ratio}x avg | Price: €${fmtPrice(price)} (${change >= 0 ? '+' : ''}${change.toFixed(1)}% 24h)\nMarket: ${tier} (${bearishPct}% bearish)`;
+            await sendTelegram(msg);
+            await db.insertEarlyWarning({ coinId: id, symbol, pattern: 'VOLUME_BUILDING', price, detail: `${ratio}x vol avg, 24h ${change.toFixed(1)}%` });
+            console.log(`  ⚡ VOL_BUILD  ${symbol.padEnd(8)} vol=${ratio}x avg [${tier}]`);
+          }
+        }
+      }
+    }
+
+    // ── Pattern 2: RELATIVE STRENGTH BUILDING ────────────────────────────
+    // Up >1% over last 3 polls while BTC flat/down and market >55% bearish
+    if (ewCooledDown(id, 'REL_STRENGTH_BUILD') && bearishPct > 55 && btcTrend !== 'BULL' && prevPrice != null) {
+      if (storedHistory.length >= 3) {
+        const price3ago = storedHistory[storedHistory.length - 3].price;
+        if (price3ago > 0) {
+          const change3poll = ((price - price3ago) / price3ago) * 100;
+          if (change3poll > 1) {
+            ewMarkFired(id, 'REL_STRENGTH_BUILD');
+            const msg = `⚡ RELATIVE STRENGTH - ${symbol}\n+${change3poll.toFixed(2)}% while market drops. Potential breakout building.\nPrice: €${fmtPrice(price)} | BTC: ${btcTrend} | Market: ${tier} (${bearishPct}% bearish)`;
+            await sendTelegram(msg);
+            await db.insertEarlyWarning({ coinId: id, symbol, pattern: 'REL_STRENGTH_BUILD', price, detail: `+${change3poll.toFixed(2)}% over 3 polls, BTC ${btcTrend}` });
+            console.log(`  ⚡ RS_BUILD   ${symbol.padEnd(8)} +${change3poll.toFixed(2)}% [3 polls, BTC:${btcTrend}, ${tier}]`);
+          }
+        }
+      }
+    }
+
+    // ── Pattern 3: RESISTANCE BREAKOUT ────────────────────────────────────
+    // Price crosses above 24h high for the first time this poll
+    if (ewCooledDown(id, 'RESISTANCE_BREAK') && prevPrice != null) {
+      const hist24h = storedHistory.filter(h => h.recorded_at.getTime() > cutoff24h);
+      if (hist24h.length >= 20) {
+        const high24h = hist24h.reduce((m, h) => Math.max(m, h.price), 0);
+        if (prevPrice <= high24h && price > high24h) {
+          ewMarkFired(id, 'RESISTANCE_BREAK');
+          const msg = `⚡ RESISTANCE BREAK - ${symbol}\nBreaking above 24h high at €${fmtPrice(high24h)}\nPrice: €${fmtPrice(price)} | Market: ${tier} (${bearishPct}% bearish)`;
+          await sendTelegram(msg);
+          await db.insertEarlyWarning({ coinId: id, symbol, pattern: 'RESISTANCE_BREAK', price, detail: `broke 24h high €${fmtPrice(high24h)}` });
+          console.log(`  ⚡ RES_BREAK  ${symbol.padEnd(8)} €${fmtPrice(price)} > 24h_high €${fmtPrice(high24h)} [${tier}]`);
+        }
+      }
+    }
+  }
+}
+
 // ── Volume Spike Detection ────────────────────────────────────────────────────
 // Tracks per-poll EUR volume deltas (how much volume traded in each 90s window)
 // Uses Bitvavo's 24h cumulative volumeQuote — delta = current minus previous poll
@@ -843,6 +927,8 @@ async function poll() {
     // Relative strength — coins holding up while market is broadly bearish
     await checkRelativeStrength(coins);
 
+    // Early warning system — pre-breakout detection (Layer 2)
+    await checkEarlyWarnings(coins, historyMap);
 
     if (Math.random() < 0.017) await db.purgeOldTriggers();
 
@@ -1016,8 +1102,9 @@ function scheduleDailyReport() {
 async function computeHealthReport() {
   try {
     const openPositions = await db.getAllOpenPositions();
-    const coinStates = await db.getAllCoinStates();
-    const triggers = await db.getAllTriggers(100);
+    const coinStates    = await db.getAllCoinStates();
+    const triggers      = await db.getAllTriggers(100);
+    const ewCount       = await db.getEarlyWarningsCount(24);
 
     // Count coins with meaningful alpha (not default 50)
     const meaningfulAlphas = coinStates.filter(s => s.alpha !== 50).length;
@@ -1051,6 +1138,7 @@ async function computeHealthReport() {
       `  BUY signals:    ${recentBuys}`,
       `  SELL signals:   ${recentSells}`,
       `  Open positions: ${openCount}`,
+      `  Early warnings: ${ewCount} yesterday`,
       ``,
       `🔍 Filters (since midnight)`,
       `  BTC bear:       ${btcBearBlockedToday} blocked`,

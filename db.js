@@ -75,6 +75,18 @@ async function init() {
       PRIMARY KEY (coin_id, timestamp)
     );
     CREATE INDEX IF NOT EXISTS idx_candles_coin ON candles(coin_id);
+
+    CREATE TABLE IF NOT EXISTS early_warnings (
+      id        SERIAL PRIMARY KEY,
+      coin_id   TEXT NOT NULL,
+      symbol    TEXT NOT NULL,
+      pattern   TEXT NOT NULL,
+      price     REAL NOT NULL,
+      detail    TEXT,
+      fired_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_ew_coin ON early_warnings(coin_id);
+    CREATE INDEX IF NOT EXISTS idx_ew_time ON early_warnings(fired_at);
   `);
   console.log('✓ PostgreSQL connected');
 }
@@ -195,6 +207,21 @@ async function purgeOldCandles(days = 7) {
   );
 }
 
+// ── Early Warnings ────────────────────────────────────────────────────────────
+async function insertEarlyWarning({ coinId, symbol, pattern, price, detail }) {
+  await pool.query(
+    'INSERT INTO early_warnings (coin_id, symbol, pattern, price, detail) VALUES ($1,$2,$3,$4,$5)',
+    [coinId, symbol, pattern, price, detail || null]
+  );
+}
+
+async function getEarlyWarningsCount(hours = 24) {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS cnt FROM early_warnings WHERE fired_at > NOW() - INTERVAL '${hours} hours'`
+  );
+  return rows[0]?.cnt || 0;
+}
+
 // Tracked coins
 async function addTrackedCoin({ coinId, symbol, name, autoAdded = true }) {
   await pool.query(
@@ -271,4 +298,5 @@ module.exports = {
   purgeOldTriggers, purgeTriggersBeforeDate,
   saveOpenPosition, deleteOpenPosition, getAllOpenPositions,
   saveCoinState, getAllCoinStates,
+  insertEarlyWarning, getEarlyWarningsCount,
 };
