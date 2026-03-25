@@ -228,22 +228,32 @@ function runBulkBacktest(historyMap, opts = {}) {
   const MIN_POINTS = 40;
   const results    = {};
   let   allTrades  = [];
+  let   tooFewData = 0;
+  let   noTrades   = 0;
 
   for (const [coinId, history] of Object.entries(historyMap)) {
-    if (history.length < MIN_POINTS) continue;
+    if (history.length < MIN_POINTS) { tooFewData++; continue; }
     const { trades, metrics } = runBacktest(history, opts);
+    allTrades = allTrades.concat(trades.filter(t => t.exitReason !== 'OPEN'));
     if (metrics) {
       results[coinId] = metrics;
-      allTrades = allTrades.concat(trades.filter(t => t.exitReason !== 'OPEN'));
+    } else {
+      // Enough data but no BUY/SELL cycle triggered — still count as processed
+      noTrades++;
     }
   }
 
+  const coinsWithTrades = Object.keys(results).length;
+  const coinsProcessed  = coinsWithTrades + noTrades;
+
   return {
-    aggregate:        computeMetrics(allTrades),
-    coins:            results,
-    coinsBacktested:  Object.keys(results).length,
-    coinsSkipped:     Object.keys(historyMap).length - Object.keys(results).length,
-    dataHours:        opts.hours || 48,
+    aggregate:       computeMetrics(allTrades),
+    coins:           results,
+    coinsProcessed,   // all coins with ≥40 data points that were fully simulated
+    coinsWithTrades,  // subset that generated ≥1 closed trade
+    coinsNoTrades:   noTrades,    // processed but no signal triggered in window
+    coinsSkipped:    tooFewData,  // insufficient price history (<40 points)
+    dataHours:       opts.hours || 48,
   };
 }
 

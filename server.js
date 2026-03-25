@@ -139,6 +139,22 @@ app.get('/api/alltriggers', auth, async (req, res) => {
   }
 });
 
+// ── GET /api/alphas ───────────────────────────────────────────────────────────
+// Returns all coins sorted by current alpha score (from coin_state table)
+app.get('/api/alphas', auth, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+    const rows  = await db.getAllCoinStates();
+    const sorted = rows
+      .sort((a, b) => b.alpha - a.alpha)
+      .slice(0, limit)
+      .map(r => ({ symbol: r.symbol, coinId: r.coin_id, alpha: r.alpha, price: r.price, updatedAt: r.updated_at }));
+    res.json({ coins: sorted, total: rows.length, updatedAt: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/backtest ─────────────────────────────────────────────────────────
 // Replays price_history through the alpha formula and reports trading metrics.
 //
@@ -171,7 +187,7 @@ app.get('/api/backtest', auth, async (req, res) => {
     // Bulk — all coins with enough data
     const historyMap = await db.getBulkPriceHistory(hours);
     const result     = backtest.runBulkBacktest(historyMap, opts);
-    console.log(`/api/backtest bulk: ${result.coinsBacktested} coins, aggregate WR=${result.aggregate?.winRate ?? '-'}% PF=${result.aggregate?.profitFactor ?? '-'}`);
+    console.log(`/api/backtest bulk: ${result.coinsProcessed} processed, ${result.coinsWithTrades} with trades, WR=${result.aggregate?.winRate ?? '-'}% PF=${result.aggregate?.profitFactor ?? '-'}`);
     res.json(result);
   } catch (e) {
     console.error('/api/backtest error:', e);
