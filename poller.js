@@ -150,7 +150,7 @@ async function checkEarlyWarnings(coins, historyMap) {
 const volumeDeltaHistory = {};
 const VOLUME_HISTORY_LEN = 40;    // ~60 min of 90s polls
 const VOLUME_MIN_SAMPLES = 15;    // need at least 15 deltas before filtering
-const VOLUME_SPIKE_MULT  = 2.0;   // spike = current delta ≥ 2× rolling average
+const VOLUME_SPIKE_MULT  = 1.3;   // spike = current delta ≥ 1.3× rolling average
 
 function recordVolumeDelta(coinId, volume24h) {
   const prev = prevState[coinId]?.volume24h;
@@ -224,7 +224,7 @@ function refreshWeakCoinCache() {
 
 function getSentimentTier(bearishPct) {
   if (bearishPct >= 70) return { tier: 'SEVERE',  buyOverride: 85 };
-  if (bearishPct >= 55) return { tier: 'WARNING', buyOverride: 80 };
+  if (bearishPct >= 55) return { tier: 'WARNING', buyOverride: 77 };
   return                       { tier: 'NORMAL',  buyOverride: 75 };
 }
 
@@ -558,9 +558,12 @@ async function refreshCoinThresholds() {
   }
 }
 
-// Returns true when hourly candles show uptrend (EMA9 > EMA21), false for downtrend,
-// null when not enough candle data yet (don't block in that case).
-function hourlyEmaUptrend(candleHistory) {
+// Returns hourly EMA9/EMA21 relationship:
+//   null   — not enough candle data yet (don't penalise)
+//   'BULL' — EMA9 > EMA21 (uptrend)
+//   'BEAR' — EMA9 < EMA21 but gap ≤ 2% of price (soft bearish — apply alpha penalty)
+//   'STRONG_BEAR' — EMA9 < EMA21 and gap > 2% of price (hard block)
+function hourlyEmaTrend(candleHistory) {
   if (!candleHistory || candleHistory.length < 21) return null;
   const closes = candleHistory.map(c => c.close);
   const k9 = 2 / 10, k21 = 2 / 22;
@@ -568,7 +571,9 @@ function hourlyEmaUptrend(candleHistory) {
   let e21 = closes.slice(0, 21).reduce((a, b) => a + b, 0) / 21;
   for (let i = 9;  i < closes.length; i++) e9  = closes[i] * k9  + e9  * (1 - k9);
   for (let i = 21; i < closes.length; i++) e21 = closes[i] * k21 + e21 * (1 - k21);
-  return e9 > e21;
+  if (e9 > e21) return 'BULL';
+  const gapPct = (e21 - e9) / e21 * 100;
+  return gapPct > 2 ? 'STRONG_BEAR' : 'BEAR';
 }
 
 // Fetch 1h OHLCV candles from Bitvavo for all active coins — runs once per hour.
@@ -689,8 +694,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
     }
 
     if (nowAboveBuy && confirmed && !prev.hasOpenBuy && consecutiveAbove >= CONFIRM_NEEDED) {
-      // Confirmed BUY — blocked in bear market unless alpha is very strong (80+)
-      if (btcTrend === 'BEAR' && alpha < 80) {
+      // Confirmed BUY — blocked in bear market unless alpha is very strong (78+)
+      if (btcTrend === 'BEAR' && alpha < 78) {
         btcBearBlockedToday++;
         console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh} [btc-blocked today: ${btcBearBlockedToday}]`);
         prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
@@ -713,13 +718,28 @@ async function processCoin(coin, storedHistory, candleHistory) {
         prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
-      // Multi-timeframe confirmation — hourly candles must show EMA9 > EMA21 uptrend
-      const hourlyUptrend = hourlyEmaUptrend(candleHistory);
-      if (hourlyUptrend === false) {
+      // Multi-timeframe confirmation — hourly EMA trend:
+      //   STRONG_BEAR (gap >2%): hard block
+      //   BEAR (gap ≤2%): apply -5 alpha penalty but allow signal if still above threshold
+      //   BULL or null: no adjustment
+      const hourlyTrend = hourlyEmaTrend(candleHistory);
+      let alphaForCheck = alpha;
+      let hourlyNote = '';
+      if (hourlyTrend === 'STRONG_BEAR') {
         hourlyTrendBlockedToday++;
-        console.log(`  BUY BLOCKED (hourly trend bearish) ${symbol.padEnd(8)} a=${alpha} [hourly-blocked today: ${hourlyTrendBlockedToday}]`);
+        console.log(`  BUY BLOCKED (hourly strong bear >2%) ${symbol.padEnd(8)} a=${alpha} [hourly-blocked today: ${hourlyTrendBlockedToday}]`);
         prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
+      } else if (hourlyTrend === 'BEAR') {
+        alphaForCheck = alpha - 5;
+        hourlyNote = ' [hourly bearish -5]';
+        if (alphaForCheck < effectiveBuyThresh) {
+          hourlyTrendBlockedToday++;
+          console.log(`  BUY BLOCKED (hourly bear penalty) ${symbol.padEnd(8)} a=${alpha}-5=${alphaForCheck} thresh=${effectiveBuyThresh} [hourly-blocked today: ${hourlyTrendBlockedToday}]`);
+          prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
+          return;
+        }
+        console.log(`  hourly bear penalty applied: ${symbol.padEnd(8)} a=${alpha}→${alphaForCheck} still above thresh=${effectiveBuyThresh}`);
       }
       const deltas = volumeDeltaHistory[id] || [];
       const avgDelta = deltas.length ? deltas.reduce((a,b)=>a+b,0)/deltas.length : 0;
@@ -727,11 +747,11 @@ async function processCoin(coin, storedHistory, candleHistory) {
       const volRatio = avgDelta > 0 ? (curDelta / avgDelta).toFixed(1) : '?';
       const coinBoostNote = coinBoost !== 0 ? ` coin:${coinBoost > 0 ? '+' : ''}${coinBoost}` : '';
       const reason = earlyTrend
-        ? `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} polls, Early Trend) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}${coinBoostNote} vol:${volRatio}x]${btcTrend === 'BEAR' ? ' [override: alpha≥80]' : ''}`
-        : `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} consecutive polls) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}${coinBoostNote} vol:${volRatio}x]${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
+        ? `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} polls, Early Trend) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}${coinBoostNote} vol:${volRatio}x${hourlyNote}]${btcTrend === 'BEAR' ? ' [override: alpha≥78]' : ''}`
+        : `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} consecutive polls) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}${coinBoostNote} vol:${volRatio}x${hourlyNote}]${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
       await db.addTrackedCoin({ coinId: id, symbol, name, autoAdded: true });
-      const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : '\nBTC trend: BEAR OVERRIDE (alpha>=80)';
+      const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : '\nBTC trend: BEAR OVERRIDE (alpha>=78)';
       const holdMin = Math.round(MIN_HOLD_MS / 60000);
       const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'}${coinBoostNote})\nVolume: ${volRatio}x avg (spike confirmed)\nMin hold: ${holdMin}min\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
