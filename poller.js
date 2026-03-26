@@ -101,10 +101,8 @@ async function checkEarlyWarnings(coins, historyMap) {
           if (avg > 0 && currentDelta > avg * 2.5) {
             const ratio = (currentDelta / avg).toFixed(1);
             ewMarkFired(id, 'VOLUME_BUILDING');
-            const msg = `⚡ VOLUME BUILDING - ${symbol}\nVolume spike detected before price move. Watch for breakout.\nVol ratio: ${ratio}x avg | Price: €${fmtPrice(price)} (${change >= 0 ? '+' : ''}${change.toFixed(1)}% 24h)\nMarket: ${tier} (${bearishPct}% bearish)`;
-            await sendTelegram(msg);
             await db.insertEarlyWarning({ coinId: id, symbol, pattern: 'VOLUME_BUILDING', price, detail: `${ratio}x vol avg, 24h ${change.toFixed(1)}%` });
-            console.log(`  ⚡ VOL_BUILD  ${symbol.padEnd(8)} vol=${ratio}x avg [${tier}]`);
+            console.log(`  ⚡ VOL_BUILD  ${symbol.padEnd(8)} vol=${ratio}x avg [${tier}] (no Telegram)`);
           }
         }
       }
