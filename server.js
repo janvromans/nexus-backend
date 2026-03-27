@@ -139,6 +139,19 @@ app.get('/api/alltriggers', auth, async (req, res) => {
   }
 });
 
+// ── GET /api/early-warnings ───────────────────────────────────────────────────
+// Returns recent early warning alerts from the early_warnings table
+app.get('/api/early-warnings', auth, async (req, res) => {
+  try {
+    const hours = Math.min(parseInt(req.query.hours) || 24, 168);
+    const limit = Math.min(parseInt(req.query.limit) || 200, 500);
+    const rows  = await db.getEarlyWarnings(hours, limit);
+    res.json({ warnings: rows, total: rows.length, hours, updatedAt: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/alphas ───────────────────────────────────────────────────────────
 // Returns all coins sorted by current alpha score (from coin_state table)
 app.get('/api/alphas', auth, async (req, res) => {

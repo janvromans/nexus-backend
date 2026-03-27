@@ -222,6 +222,18 @@ async function getEarlyWarningsCount(hours = 24) {
   return rows[0]?.cnt || 0;
 }
 
+async function getEarlyWarnings(hours = 24, limit = 200) {
+  const { rows } = await pool.query(
+    `SELECT coin_id, symbol, pattern, price, detail, fired_at
+     FROM early_warnings
+     WHERE fired_at > NOW() - INTERVAL '${hours} hours'
+     ORDER BY fired_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return rows;
+}
+
 // Tracked coins
 async function addTrackedCoin({ coinId, symbol, name, autoAdded = true }) {
   await pool.query(
@@ -298,5 +310,5 @@ module.exports = {
   purgeOldTriggers, purgeTriggersBeforeDate,
   saveOpenPosition, deleteOpenPosition, getAllOpenPositions,
   saveCoinState, getAllCoinStates,
-  insertEarlyWarning, getEarlyWarningsCount,
+  insertEarlyWarning, getEarlyWarningsCount, getEarlyWarnings,
 };
