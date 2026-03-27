@@ -66,8 +66,18 @@ async function checkRelativeStrength(coins) {
 // Pre-breakout detection: fires ⚡ WATCH THIS alerts before the main signal fires.
 // Patterns: VOLUME_BUILDING, REL_STRENGTH_BUILD, RESISTANCE_BREAK
 // Gated to WARNING/SEVERE market conditions — most valuable when market is weak.
-const EW_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h per coin per pattern
-const ewLastFired    = {};  // { 'coinId:pattern' → timestamp }
+const EW_COOLDOWN_MS   = 12 * 60 * 60 * 1000; // 12h per coin per pattern
+const EW_DAILY_MAX     = 20;                    // max Telegram alerts per day across all EW patterns
+const ewLastFired      = {};  // { 'coinId:pattern' → timestamp }
+let   ewTodayCount     = 0;   // resets at midnight UTC
+let   ewTodayDate      = '';  // tracks which UTC date the counter applies to
+
+function ewDailyBudget() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (ewTodayDate !== today) { ewTodayCount = 0; ewTodayDate = today; }
+  return ewTodayCount < EW_DAILY_MAX;
+}
+function ewCountMessage() { ewTodayCount++; }
 
 function ewCooledDown(coinId, pattern) {
   return (Date.now() - (ewLastFired[`${coinId}:${pattern}`] || 0)) >= EW_COOLDOWN_MS;
@@ -109,16 +119,19 @@ async function checkEarlyWarnings(coins, historyMap) {
     }
 
     // ── Pattern 2: RELATIVE STRENGTH BUILDING ────────────────────────────
-    // Up >1% over last 3 polls while BTC flat/down and market >55% bearish
+    // Up >2% over last 3 polls while BTC flat/down and market >55% bearish
     if (ewCooledDown(id, 'REL_STRENGTH_BUILD') && bearishPct > 55 && btcTrend !== 'BULL' && prevPrice != null) {
       if (storedHistory.length >= 3) {
         const price3ago = storedHistory[storedHistory.length - 3].price;
         if (price3ago > 0) {
           const change3poll = ((price - price3ago) / price3ago) * 100;
-          if (change3poll > 1) {
+          if (change3poll > 2) {
             ewMarkFired(id, 'REL_STRENGTH_BUILD');
-            const msg = `⚡ RELATIVE STRENGTH - ${symbol}\n+${change3poll.toFixed(2)}% while market drops. Potential breakout building.\nPrice: €${fmtPrice(price)} | BTC: ${btcTrend} | Market: ${tier} (${bearishPct}% bearish)`;
-            await sendTelegram(msg);
+            if (ewDailyBudget()) {
+              const msg = `⚡ RELATIVE STRENGTH - ${symbol}\n+${change3poll.toFixed(2)}% while market drops. Potential breakout building.\nPrice: €${fmtPrice(price)} | BTC: ${btcTrend} | Market: ${tier} (${bearishPct}% bearish)`;
+              await sendTelegram(msg);
+              ewCountMessage();
+            }
             await db.insertEarlyWarning({ coinId: id, symbol, pattern: 'REL_STRENGTH_BUILD', price, detail: `+${change3poll.toFixed(2)}% over 3 polls, BTC ${btcTrend}` });
             console.log(`  ⚡ RS_BUILD   ${symbol.padEnd(8)} +${change3poll.toFixed(2)}% [3 polls, BTC:${btcTrend}, ${tier}]`);
           }
@@ -127,17 +140,21 @@ async function checkEarlyWarnings(coins, historyMap) {
     }
 
     // ── Pattern 3: RESISTANCE BREAKOUT ────────────────────────────────────
-    // Price crosses above 24h high for the first time this poll
+    // Price crosses above 24h high by at least 0.5% for the first time this poll
     if (ewCooledDown(id, 'RESISTANCE_BREAK') && prevPrice != null) {
       const hist24h = storedHistory.filter(h => h.recorded_at.getTime() > cutoff24h);
       if (hist24h.length >= 20) {
-        const high24h = hist24h.reduce((m, h) => Math.max(m, h.price), 0);
-        if (prevPrice <= high24h && price > high24h) {
+        const high24h    = hist24h.reduce((m, h) => Math.max(m, h.price), 0);
+        const breakPct   = high24h > 0 ? ((price - high24h) / high24h) * 100 : 0;
+        if (prevPrice <= high24h && breakPct >= 0.5) {
           ewMarkFired(id, 'RESISTANCE_BREAK');
-          const msg = `⚡ RESISTANCE BREAK - ${symbol}\nBreaking above 24h high at €${fmtPrice(high24h)}\nPrice: €${fmtPrice(price)} | Market: ${tier} (${bearishPct}% bearish)`;
-          await sendTelegram(msg);
-          await db.insertEarlyWarning({ coinId: id, symbol, pattern: 'RESISTANCE_BREAK', price, detail: `broke 24h high €${fmtPrice(high24h)}` });
-          console.log(`  ⚡ RES_BREAK  ${symbol.padEnd(8)} €${fmtPrice(price)} > 24h_high €${fmtPrice(high24h)} [${tier}]`);
+          if (ewDailyBudget()) {
+            const msg = `⚡ RESISTANCE BREAK - ${symbol}\n+${breakPct.toFixed(2)}% above 24h high €${fmtPrice(high24h)}\nPrice: €${fmtPrice(price)} | Market: ${tier} (${bearishPct}% bearish)`;
+            await sendTelegram(msg);
+            ewCountMessage();
+          }
+          await db.insertEarlyWarning({ coinId: id, symbol, pattern: 'RESISTANCE_BREAK', price, detail: `+${breakPct.toFixed(2)}% above 24h high €${fmtPrice(high24h)}` });
+          console.log(`  ⚡ RES_BREAK  ${symbol.padEnd(8)} €${fmtPrice(price)} +${breakPct.toFixed(2)}% > 24h_high €${fmtPrice(high24h)} [${tier}]`);
         }
       }
     }
