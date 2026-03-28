@@ -66,7 +66,7 @@ async function checkRelativeStrength(coins) {
 // Pre-breakout detection: fires ⚡ WATCH THIS alerts before the main signal fires.
 // Patterns: VOLUME_BUILDING, REL_STRENGTH_BUILD, RESISTANCE_BREAK
 // Gated to WARNING/SEVERE market conditions — most valuable when market is weak.
-const EW_COOLDOWN_MS   = 12 * 60 * 60 * 1000; // 12h per coin per pattern
+const EW_COOLDOWN_MS   = 24 * 60 * 60 * 1000; // 24h per coin per pattern
 const EW_DAILY_MAX     = 20;                    // max Telegram alerts per day across all EW patterns
 const ewLastFired      = {};  // { 'coinId:pattern' → timestamp }
 let   ewTodayCount     = 0;   // resets at midnight UTC
@@ -119,13 +119,22 @@ async function checkEarlyWarnings(coins, historyMap) {
     }
 
     // ── Pattern 2: RELATIVE STRENGTH BUILDING ────────────────────────────
-    // Up >2% over last 3 polls while BTC flat/down and market >55% bearish
+    // Up >3% over last 3 polls while BTC flat/down, market >55% bearish, and coin above 1h EMA
     if (ewCooledDown(id, 'REL_STRENGTH_BUILD') && bearishPct > 55 && btcTrend !== 'BULL' && prevPrice != null) {
       if (storedHistory.length >= 3) {
         const price3ago = storedHistory[storedHistory.length - 3].price;
         if (price3ago > 0) {
           const change3poll = ((price - price3ago) / price3ago) * 100;
-          if (change3poll > 2) {
+          const coinCandles = candleMapCache[id];
+          const aboveEma = (() => {
+            if (!coinCandles || coinCandles.length < 9) return true; // not enough data — don't block
+            const closes = coinCandles.map(c => c.close);
+            const k = 2 / 10;
+            let ema = closes.slice(0, 9).reduce((a, b) => a + b, 0) / 9;
+            for (let i = 9; i < closes.length; i++) ema = closes[i] * k + ema * (1 - k);
+            return price > ema;
+          })();
+          if (change3poll > 3 && aboveEma) {
             ewMarkFired(id, 'REL_STRENGTH_BUILD');
             if (ewDailyBudget()) {
               const msg = `⚡ RELATIVE STRENGTH - ${symbol}\n+${change3poll.toFixed(2)}% while market drops. Potential breakout building.\nPrice: €${fmtPrice(price)} | BTC: ${btcTrend} | Market: ${tier} (${bearishPct}% bearish)`;
