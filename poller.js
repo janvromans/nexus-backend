@@ -647,22 +647,31 @@ async function processCoin(coin, storedHistory, candleHistory) {
     ? candleHistory.map(c => c.close)
     : null;
 
-  // Adaptive history: use price_history when available (≥20 points), otherwise fall back
-  // to hourly candle closes. Candles have up to 168h of data fetched from Bitvavo API on
-  // first poll, so alpha works immediately after a DB reset rather than waiting 30+ minutes.
+  // Adaptive history: prefer hourly candle closes when price_history is stale (restart/downtime)
+  // or sparse (<20 points). Candles give 7-day hourly indicators that reflect actual trends,
+  // whereas 90s price_history only covers 15-30 minute windows right after a restart.
+  //
+  // Gap detection: if the newest price_history entry is >5 minutes old, the service was down
+  // (restart/deploy) — bootstrap from candles so alpha reflects real trend immediately.
+  const lastEntryAge = storedHistory.length > 0
+    ? (Date.now() - new Date(storedHistory[storedHistory.length - 1].recorded_at).getTime()) / 1000
+    : Infinity;
+  const historyStale = lastEntryAge > 5 * 60; // >5 min gap = restart/downtime
+
   let effectiveHistory = history;
   let effectiveCandleCloses = candleCloses;
-  if (history.length < 20) {
+  if (history.length < 20 || historyStale) {
     if (candleHistory && candleHistory.length >= 20) {
       // Bootstrap from candle closes — captures pre-restart price action.
       // Check candleHistory directly (not candleCloses, which requires >= 26).
       effectiveHistory = [...candleHistory.map(c => c.close), price];
       effectiveCandleCloses = null; // candle data is already the primary history
-    } else {
+    } else if (history.length < 20) {
       // Not enough data in either source — store and wait
       await db.insertPricePoint({ coinId: id, price, alpha: 50 });
       return;
     }
+    // If stale but candles unavailable, fall through and use existing price_history
   }
 
   const { alpha, earlyTrend } = computeAlphaScore(effectiveHistory, price, cfg, effectiveCandleCloses);
@@ -1312,6 +1321,17 @@ async function start() {
     if (restored > 0) console.log(`  Restored ${restored} coin alpha states from DB`);
   } catch(e) {
     console.error('Failed to restore coin states:', e.message);
+  }
+
+  // Pre-load candle cache from DB — ensures first poll has 7-day hourly history available
+  // immediately, so alpha computes from real trend data (not 90s micro-data) after restart.
+  try {
+    candleMapCache = await db.getBulkCandles(7);
+    const preloadedCoins = Object.keys(candleMapCache).length;
+    const preloadedRows  = Object.values(candleMapCache).reduce((s, h) => s + h.length, 0);
+    console.log(`  Candle cache pre-loaded: ${preloadedRows} rows / ${preloadedCoins} coins`);
+  } catch(e) {
+    console.error('Failed to pre-load candle cache:', e.message);
   }
 
   // Load coin-specific threshold boosts from historical trigger data
