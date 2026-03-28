@@ -969,22 +969,6 @@ async function poll() {
       }
     }
 
-    // [DIAG] Top coins by consecutiveAbove — temporary debug log
-    const diagTop = Object.entries(prevState)
-      .filter(([, s]) => s.consecutiveAbove > 0)
-      .sort(([, a], [, b]) => b.consecutiveAbove - a.consecutiveAbove)
-      .slice(0, 5);
-    if (diagTop.length > 0) {
-      console.log(`  [DIAG] Top consecutiveAbove: ${diagTop.map(([id, s]) => `${id}=${s.consecutiveAbove}(a=${s.alpha})`).join(', ')}`);
-    } else {
-      console.log(`  [DIAG] No coins with consecutiveAbove > 0 this cycle`);
-    }
-    // [DIAG] Top 5 alpha scores from prevState
-    const diagAlpha = Object.entries(prevState)
-      .sort(([, a], [, b]) => b.alpha - a.alpha)
-      .slice(0, 5);
-    console.log(`  [DIAG] Top alphas: ${diagAlpha.map(([id, s]) => `${id}=${s.alpha}`).join(', ')}`);
-
     // Purge old price history — single query instead of one per coin
     await db.purgePriceHistoryBulk(168);
 
