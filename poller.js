@@ -707,7 +707,9 @@ async function processCoin(coin, storedHistory, candleHistory) {
   const nowBelowSell = alpha <= cfg.alphaSellThresh;
   let peakArmed = prev?.peakArmed || false;
   let peakAlpha = prev?.peakAlpha || alpha;
-  let consecutiveAbove = nowAboveBuy ? ((prev?.consecutiveAbove || 0) + 1) : 0;
+  const prevConsecutive = prev?.consecutiveAbove || 0;
+  const withinTolerance = prevConsecutive >= 1 && alpha >= effectiveBuyThresh - 3;
+  let consecutiveAbove = (nowAboveBuy || withinTolerance) ? (prevConsecutive + 1) : 0;
 
   if (prev) {
     const wasAboveBuy  = prev.alpha >= effectiveBuyThresh;
