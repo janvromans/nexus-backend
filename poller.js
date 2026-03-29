@@ -17,7 +17,6 @@ let candleMapCache  = {}; // { coinId: [{timestamp,open,high,low,close,volume}] 
 
 // ── Signal Block Counters ─────────────────────────────────────────────────────
 // Count confirmed BUY signals blocked at each filter stage — reset in daily report
-let btcBearBlockedToday      = 0;
 let volumeBlockedToday       = 0;
 let hourlyTrendBlockedToday  = 0;
 
@@ -750,14 +749,6 @@ async function processCoin(coin, storedHistory, candleHistory) {
       const mode = breakoutAlpha >= effectiveBuyThresh ? 'BREAKOUT' : 'MEAN_REV';
       const effectiveAlpha = mode === 'BREAKOUT' ? breakoutAlpha : alpha;
 
-      // Confirmed BUY — blocked in bear market unless score is very strong (78+)
-      if (btcTrend === 'BEAR' && effectiveAlpha < 78) {
-        btcBearBlockedToday++;
-        console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} mr=${alpha} brk=${breakoutAlpha} thresh=${effectiveBuyThresh} [btc-blocked today: ${btcBearBlockedToday}]`);
-        prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
-        return;
-      }
-
       // Volume spike check disabled — always pass (re-enable after 50 cycles)
       // Multi-timeframe confirmation — hourly EMA trend:
       //   STRONG_BEAR (gap >2%): hard block
@@ -788,10 +779,10 @@ async function processCoin(coin, storedHistory, candleHistory) {
       const volRatio = avgDelta > 0 ? (curDelta / avgDelta).toFixed(1) : '?';
       const coinBoostNote = coinBoost !== 0 ? ` coin:${coinBoost > 0 ? '+' : ''}${coinBoost}` : '';
       const modeNote = mode === 'BREAKOUT' ? ` [BREAKOUT brk=${breakoutAlpha}]` : (earlyTrend ? ' (Early Trend)' : '');
-      const reason = `${mode} alpha=${effectiveAlpha} confirmed BUY (${CONFIRM_NEEDED} polls) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}${coinBoostNote} vol:${volRatio}x${hourlyNote}]${btcTrend === 'BEAR' ? ' [override: alpha≥78]' : btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
+      const reason = `${mode} alpha=${effectiveAlpha} confirmed BUY (${CONFIRM_NEEDED} polls) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}${coinBoostNote} vol:${volRatio}x${hourlyNote}]${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
       await db.addTrackedCoin({ coinId: id, symbol, name, autoAdded: true });
-      const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : btcTrend === 'BEAR' ? '\nBTC trend: BEAR OVERRIDE (alpha≥78)' : '';
+      const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : btcTrend === 'BEAR' ? '\nBTC trend: BEARISH' : '';
       const holdMin = Math.round(MIN_HOLD_MS / 60000);
       const msg = `[ BUY SIGNAL ] ${symbol}${modeNote}\nPrice: $${fmtPrice(price)}\nMean-Rev α: ${alpha}  Breakout α: ${breakoutAlpha}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'}${coinBoostNote})\nVolume: ${volRatio}x avg (spike confirmed)\nMin hold: ${holdMin}min\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
@@ -1105,7 +1096,6 @@ async function computeDailyReport() {
     }
 
     msg += `\n🔍 FILTERS (today)\n`;
-    msg += `BTC bear:    ${btcBearBlockedToday} BUY signals blocked\n`;
     msg += `Vol spike:   ${volumeBlockedToday} BUY signals blocked\n`;
     msg += `Hourly trend:${hourlyTrendBlockedToday} BUY signals blocked\n`;
     const threshAdjusted = Object.keys(coinThresholdBoosts).length;
@@ -1119,8 +1109,7 @@ async function computeDailyReport() {
     msg += `Phase 2: ${cleanCycles} clean cycles (need 50)${phase2Status}`;
 
     await sendTelegram(msg);
-    btcBearBlockedToday      = 0; // reset daily counters
-    volumeBlockedToday       = 0;
+    volumeBlockedToday       = 0; // reset daily counters
     hourlyTrendBlockedToday  = 0;
     console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR)`);
   } catch(e) {
@@ -1197,7 +1186,6 @@ async function computeHealthReport() {
       `  Early warnings: ${ewCount} yesterday`,
       ``,
       `🔍 Filters (since midnight)`,
-      `  BTC bear:       ${btcBearBlockedToday} blocked`,
       `  Vol spike:      ${volumeBlockedToday} blocked`,
       ``,
       openCount > 0
