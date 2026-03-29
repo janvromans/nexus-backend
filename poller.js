@@ -975,7 +975,7 @@ async function poll() {
     // Update market-wide sentiment from current alpha scores
     const allAlphas = Object.values(prevState).map(s => s.alpha).filter(a => a != null);
     updateMarketSentiment(allAlphas);
-    console.log(`  Market sentiment: ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}] BUY bar α≥${marketSentiment.buyOverride}`);
+    console.log(`  Market sentiment: ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}] BUY bar α≥75`);
 
     // Relative strength — coins holding up while market is broadly bearish
     await checkRelativeStrength(coins);
@@ -1183,7 +1183,7 @@ async function computeHealthReport() {
       `📊 Market`,
       `  BTC trend:      ${btcTrend}`,
       `  Sentiment:      ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}]`,
-      `  BUY bar:        α≥${marketSentiment.buyOverride}`,
+      `  BUY bar:        α≥75`,
       ``,
       `⚡ Last 24h Activity`,
       `  BUY signals:    ${recentBuys}`,
