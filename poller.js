@@ -298,11 +298,11 @@ function calcRsi(prices, period = 14) {
 async function sendTelegram(message) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
   try {
-    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    const res = await fetchWithTimeout(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message }),
-    });
+    }, 10000);
     if (!res.ok) console.error('Telegram error:', await res.text());
   } catch (e) {
     console.error('Telegram send failed:', e.message);
@@ -363,14 +363,22 @@ function symbolToId(symbol) {
   return SYMBOL_TO_COINGECKO_ID[symbol] || symbol.toLowerCase();
 }
 
+// Fetch with a hard timeout — prevents hung requests from accumulating and causing OOM restarts
+function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+}
+
 // Fetch current prices from Bitvavo (EUR markets)
 async function fetchCurrentPrices() {
   const coins = [];
   try {
     // Fetch all ticker prices in one call — no rate limits, no pagination
     const [tickerRes, ticker24hRes] = await Promise.all([
-      fetch(`${BITVAVO_BASE}/ticker/price`),
-      fetch(`${BITVAVO_BASE}/ticker/24h`),
+      fetchWithTimeout(`${BITVAVO_BASE}/ticker/price`),
+      fetchWithTimeout(`${BITVAVO_BASE}/ticker/24h`),
     ]);
 
     if (!tickerRes.ok || !ticker24hRes.ok) {
@@ -609,7 +617,7 @@ async function fetchAndStoreCandles(coins) {
   for (let i = 0; i < coins.length; i += BATCH_SIZE) {
     await Promise.all(coins.slice(i, i + BATCH_SIZE).map(async (coin) => {
       try {
-        const res = await fetch(`${BITVAVO_BASE}/${coin.symbol}-EUR/candles?interval=1h&limit=${LIMIT}`);
+        const res = await fetchWithTimeout(`${BITVAVO_BASE}/${coin.symbol}-EUR/candles?interval=1h&limit=${LIMIT}`);
         if (!res.ok) { failed++; return; }
         const raw = await res.json();
         if (!Array.isArray(raw) || !raw.length) return;
@@ -680,7 +688,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
   const { tier: volTier, buyBoost: volBoost } = getVolatilityTier(atrPct);
   const mcBoost   = getMarketCapBoost(id, coin.rank);
   const coinBoost = coinThresholdBoosts[id] || 0;
-  const effectiveBuyThresh = cfg.alphaThresh + volBoost + mcBoost + coinBoost;
+  const effectiveBuyThresh = cfg.alphaThresh + coinBoost; // mcBoost & volBoost disabled — re-enable after 50 cycles
 
   await db.insertPricePoint({ coinId: id, price, alpha });
 
