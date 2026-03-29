@@ -717,6 +717,11 @@ async function processCoin(coin, storedHistory, candleHistory) {
     const rsiJustOverbought = rsiNow !== null && rsiPrev !== null && rsiPrev < 65 && rsiNow >= 65;
     const hasOpenBuy   = prev.hasOpenBuy || false;
 
+    // Temporary debug: log coins near buy threshold
+    if (alpha >= 73) {
+      console.log(`NEAR_BUY ${symbol} a=${alpha} thresh=${effectiveBuyThresh} consecutive=${consecutiveAbove} hasOpenBuy=${hasOpenBuy}`);
+    }
+
     // BUY trigger — requires 3 consecutive polls above threshold
     const CONFIRM_NEEDED = 3;
     const confirmed = consecutiveAbove >= CONFIRM_NEEDED;
