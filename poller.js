@@ -1,6 +1,6 @@
 // poller.js — Fetches top 100 coins every 90s using stored history for Alpha Score
 
-const { computeAlphaScore, DEFAULT_CFG } = require('./alpha');
+const { computeAlphaScore, computeBreakoutScore, DEFAULT_CFG } = require('./alpha');
 const db = require('./db');
 
 const POLL_INTERVAL_MS = 90 * 1000;
@@ -690,6 +690,10 @@ async function processCoin(coin, storedHistory, candleHistory) {
   // Record volume delta for spike detection (must happen before prevState update)
   recordVolumeDelta(id, coin.volume24h || 0);
 
+  // Compute volume spike and breakout score (both need prevState before it's updated)
+  const volSpike = hasVolumeSpike(id, coin.volume24h || 0);
+  const { breakoutAlpha } = computeBreakoutScore(effectiveHistory, price, effectiveCandleCloses, volSpike);
+
   // Track consecutive rising polls for relative strength confirmation
   const prevPrice = prevState[id]?.price;
   if (prevPrice != null && price > prevPrice) {
@@ -701,25 +705,25 @@ async function processCoin(coin, storedHistory, candleHistory) {
   const prev = prevState[id];
 
   // Declare shared variables outside if(prev) so they're always in scope
-  const nowAboveBuy  = alpha >= effectiveBuyThresh;
+  const nowAboveBuy  = alpha >= effectiveBuyThresh || breakoutAlpha >= effectiveBuyThresh;
   const nowBelowSell = alpha <= cfg.alphaSellThresh;
   let peakArmed = prev?.peakArmed || false;
   let peakAlpha = prev?.peakAlpha || alpha;
   const prevConsecutive = prev?.consecutiveAbove || 0;
-  const withinTolerance = prevConsecutive >= 1 && alpha >= effectiveBuyThresh - 3;
+  const withinTolerance = prevConsecutive >= 1 && (alpha >= effectiveBuyThresh - 3 || breakoutAlpha >= effectiveBuyThresh - 3);
   let consecutiveAbove = (nowAboveBuy || withinTolerance) ? (prevConsecutive + 1) : 0;
 
   if (prev) {
-    const wasAboveBuy  = prev.alpha >= effectiveBuyThresh;
+    const wasAboveBuy  = prev.alpha >= effectiveBuyThresh || (prev.breakoutAlpha || 0) >= effectiveBuyThresh;
     const wasBelowSell = prev.alpha <= cfg.alphaSellThresh;
     const rsiPrev      = prev.rsiValue || null;
     const rsiOverbought = rsiNow !== null && rsiNow >= 65;
     const rsiJustOverbought = rsiNow !== null && rsiPrev !== null && rsiPrev < 65 && rsiNow >= 65;
     const hasOpenBuy   = prev.hasOpenBuy || false;
 
-    // Temporary debug: log coins near buy threshold
-    if (alpha >= 73) {
-      console.log(`NEAR_BUY ${symbol} a=${alpha} thresh=${effectiveBuyThresh} consecutive=${consecutiveAbove} hasOpenBuy=${hasOpenBuy}`);
+    // Temporary debug: log coins near buy threshold (either mode)
+    if (alpha >= 73 || breakoutAlpha >= 73) {
+      console.log(`NEAR_BUY ${symbol} mr=${alpha} brk=${breakoutAlpha} thresh=${effectiveBuyThresh} consecutive=${consecutiveAbove} hasOpenBuy=${hasOpenBuy}`);
     }
 
     // BUY trigger — requires 3 consecutive polls above threshold
@@ -728,70 +732,73 @@ async function processCoin(coin, storedHistory, candleHistory) {
 
     if (!wasAboveBuy && nowAboveBuy && !confirmed) {
       // Building confirmation — log progress but don't fire yet
-      console.log(`  CONFIRMING ${symbol.padEnd(8)} a=${alpha} [${consecutiveAbove}/${CONFIRM_NEEDED} polls]`);
-      prevState[id] = { ...prevState[id]||{}, alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
+      console.log(`  CONFIRMING ${symbol.padEnd(8)} mr=${alpha} brk=${breakoutAlpha} [${consecutiveAbove}/${CONFIRM_NEEDED} polls]`);
+      prevState[id] = { ...prevState[id]||{}, alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
       return;
     }
 
     if (nowAboveBuy && confirmed && !prev.hasOpenBuy && consecutiveAbove >= CONFIRM_NEEDED) {
-      // Confirmed BUY — blocked in bear market unless alpha is very strong (78+)
-      if (btcTrend === 'BEAR' && alpha < 78) {
+      // Determine which mode triggered
+      const mode = breakoutAlpha >= effectiveBuyThresh ? 'BREAKOUT' : 'MEAN_REV';
+      const effectiveAlpha = mode === 'BREAKOUT' ? breakoutAlpha : alpha;
+
+      // Confirmed BUY — blocked in bear market unless score is very strong (78+)
+      if (btcTrend === 'BEAR' && effectiveAlpha < 78) {
         btcBearBlockedToday++;
-        console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh} [btc-blocked today: ${btcBearBlockedToday}]`);
-        prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
+        console.log(`  BUY BLOCKED (BTC bear) ${symbol.padEnd(8)} mr=${alpha} brk=${breakoutAlpha} thresh=${effectiveBuyThresh} [btc-blocked today: ${btcBearBlockedToday}]`);
+        prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
 
-      // Volume spike confirmation — require elevated volume vs. rolling baseline
-      const volSpike = hasVolumeSpike(id, coin.volume24h || 0);
+      // Volume spike confirmation — required for both modes
+      // (breakout score mathematically cannot reach 75 without volSpike, so this is consistent)
       if (!volSpike) {
         volumeBlockedToday++;
         const deltas = volumeDeltaHistory[id] || [];
         const avgDelta = deltas.length ? deltas.reduce((a,b)=>a+b,0)/deltas.length : 0;
         const curDelta = Math.max(0, (coin.volume24h||0) - (prev.volume24h||0));
-        console.log(`  BUY BLOCKED (no vol spike) ${symbol.padEnd(8)} a=${alpha} vol_delta=${Math.round(curDelta)} avg=${Math.round(avgDelta)} need ${VOLUME_SPIKE_MULT}x [blocked today: ${volumeBlockedToday}]`);
-        prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
+        console.log(`  BUY BLOCKED (no vol spike) ${symbol.padEnd(8)} mr=${alpha} brk=${breakoutAlpha} vol_delta=${Math.round(curDelta)} avg=${Math.round(avgDelta)} need ${VOLUME_SPIKE_MULT}x [blocked today: ${volumeBlockedToday}]`);
+        prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
       // Multi-timeframe confirmation — hourly EMA trend:
       //   STRONG_BEAR (gap >2%): hard block
-      //   BEAR (gap ≤2%): apply -5 alpha penalty but allow signal if still above threshold
+      //   BEAR (gap ≤2%): apply -5 penalty to effective alpha but allow if still above threshold
       //   BULL or null: no adjustment
       const hourlyTrend = hourlyEmaTrend(candleHistory);
-      let alphaForCheck = alpha;
+      let alphaForCheck = effectiveAlpha;
       let hourlyNote = '';
       if (hourlyTrend === 'STRONG_BEAR') {
         hourlyTrendBlockedToday++;
-        console.log(`  BUY BLOCKED (hourly strong bear >2%) ${symbol.padEnd(8)} a=${alpha} [hourly-blocked today: ${hourlyTrendBlockedToday}]`);
-        prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
+        console.log(`  BUY BLOCKED (hourly strong bear >2%) ${symbol.padEnd(8)} mr=${alpha} brk=${breakoutAlpha} [hourly-blocked today: ${hourlyTrendBlockedToday}]`);
+        prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       } else if (hourlyTrend === 'BEAR') {
-        alphaForCheck = alpha - 5;
+        alphaForCheck = effectiveAlpha - 5;
         hourlyNote = ' [hourly bearish -5]';
         if (alphaForCheck < effectiveBuyThresh) {
           hourlyTrendBlockedToday++;
-          console.log(`  BUY BLOCKED (hourly bear penalty) ${symbol.padEnd(8)} a=${alpha}-5=${alphaForCheck} thresh=${effectiveBuyThresh} [hourly-blocked today: ${hourlyTrendBlockedToday}]`);
-          prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
+          console.log(`  BUY BLOCKED (hourly bear penalty) ${symbol.padEnd(8)} mr=${alpha} brk=${breakoutAlpha} ${effectiveAlpha}-5=${alphaForCheck} thresh=${effectiveBuyThresh} [hourly-blocked today: ${hourlyTrendBlockedToday}]`);
+          prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
           return;
         }
-        console.log(`  hourly bear penalty applied: ${symbol.padEnd(8)} a=${alpha}→${alphaForCheck} still above thresh=${effectiveBuyThresh}`);
+        console.log(`  hourly bear penalty applied: ${symbol.padEnd(8)} ${mode} ${effectiveAlpha}→${alphaForCheck} still above thresh=${effectiveBuyThresh}`);
       }
       const deltas = volumeDeltaHistory[id] || [];
       const avgDelta = deltas.length ? deltas.reduce((a,b)=>a+b,0)/deltas.length : 0;
       const curDelta = Math.max(0, (coin.volume24h||0) - (prev.volume24h||0));
       const volRatio = avgDelta > 0 ? (curDelta / avgDelta).toFixed(1) : '?';
       const coinBoostNote = coinBoost !== 0 ? ` coin:${coinBoost > 0 ? '+' : ''}${coinBoost}` : '';
-      const reason = earlyTrend
-        ? `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} polls, Early Trend) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}${coinBoostNote} vol:${volRatio}x${hourlyNote}]${btcTrend === 'BEAR' ? ' [override: alpha≥78]' : ''}`
-        : `Alpha ${alpha} confirmed BUY (${CONFIRM_NEEDED} consecutive polls) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}${coinBoostNote} vol:${volRatio}x${hourlyNote}]${btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
+      const modeNote = mode === 'BREAKOUT' ? ` [BREAKOUT brk=${breakoutAlpha}]` : (earlyTrend ? ' (Early Trend)' : '');
+      const reason = `${mode} alpha=${effectiveAlpha} confirmed BUY (${CONFIRM_NEEDED} polls) [ATR:${volTier} MC:${coin.rank||'?'} thresh:${effectiveBuyThresh}${coinBoostNote} vol:${volRatio}x${hourlyNote}]${btcTrend === 'BEAR' ? ' [override: alpha≥78]' : btcTrend === 'BULL' ? ' [BTC bull]' : ''}`;
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
       await db.addTrackedCoin({ coinId: id, symbol, name, autoAdded: true });
-      const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : '\nBTC trend: BEAR OVERRIDE (alpha>=78)';
+      const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : btcTrend === 'BEAR' ? '\nBTC trend: BEAR OVERRIDE (alpha≥78)' : '';
       const holdMin = Math.round(MIN_HOLD_MS / 60000);
-      const msg = `[ BUY SIGNAL ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}${earlyTrend ? ' (Early Trend)' : ''}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'}${coinBoostNote})\nVolume: ${volRatio}x avg (spike confirmed)\nMin hold: ${holdMin}min\n${reason}${btcNote}\nNow tracking for cycle data.`;
+      const msg = `[ BUY SIGNAL ] ${symbol}${modeNote}\nPrice: $${fmtPrice(price)}\nMean-Rev α: ${alpha}  Breakout α: ${breakoutAlpha}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'}${coinBoostNote})\nVolume: ${volRatio}x avg (spike confirmed)\nMin hold: ${holdMin}min\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
-      console.log(`  BUY       ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh} [ATR:${volTier} MC:${coin.rank||'?'}${coinBoostNote}] vol=${volRatio}x hold≥${holdMin}m @ $${price} [BTC:${btcTrend}]`);
-      const newState = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, consecutiveAbove, bigMoverAlerted: [] };
+      console.log(`  BUY       ${symbol.padEnd(8)} ${mode} mr=${alpha} brk=${breakoutAlpha} thresh=${effectiveBuyThresh} [ATR:${volTier} MC:${coin.rank||'?'}${coinBoostNote}] vol=${volRatio}x hold≥${holdMin}m @ $${price} [BTC:${btcTrend}]`);
+      const newState = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, consecutiveAbove, bigMoverAlerted: [] };
       prevState[id] = newState;
       // Persist to DB so position survives restarts
       await db.saveOpenPosition({ coinId: id, symbol, buyPrice: price, buyAlpha: alpha, openedAt: new Date(), peakAlpha: alpha, peakArmed: false, consecutiveAbove });
@@ -861,7 +868,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
           const msg = `[ PEAK EXIT ] ${symbol}\nPrice: $${fmtPrice(price)}\nRSI: ${rsiNow?.toFixed(1)}\nAlpha: ${peakAlpha}→${alpha} (dropped ${peakAlpha-alpha}pts from peak)\n${reason}`;
           await sendTelegram(msg);
           console.log(`  PEAK_EXIT ${symbol.padEnd(8)} a=${peakAlpha}→${alpha} RSI=${rsiNow?.toFixed(1)} @ $${price} [held ${Math.round(holdMs/60000)}min]`);
-          prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false };
+          prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false };
           await db.deleteOpenPosition(id);
           return;
         }
@@ -883,7 +890,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
         const msg = `[ STOP-LOSS ] ${symbol}\nPrice: $${fmtPrice(price)}\nLoss: ${openPnl.toFixed(2)}% from entry $${fmtPrice(prev.buyPrice)}\nAlpha: ${alpha}\n${reason}`;
         await sendTelegram(msg);
         console.log(`  STOP-LOSS ${symbol.padEnd(8)} ${openPnl.toFixed(1)}% @ $${price} [held ${Math.round(holdMs/60000)}min]`);
-        prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha };
+        prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha };
         await db.deleteOpenPosition(id);
         return;
       }
@@ -896,7 +903,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
       const msg = `[ SELL ALERT ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha} - signal weakened\n${reason}`;
       await sendTelegram(msg);
       console.log(`  SELL      ${symbol.padEnd(8)} a=${alpha} @ $${price}`);
-      prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha };
+      prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha };
       await db.deleteOpenPosition(id);
       return;
     }
@@ -904,7 +911,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
 
   const keepOpen = prev?.hasOpenBuy && alpha >= cfg.alphaSellThresh;
   prevState[id] = {
-    alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow,
+    alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow,
     hasOpenBuy: keepOpen || false,
     buyOpenedAt: keepOpen ? (prev?.buyOpenedAt || Date.now()) : null,
     buyPrice: keepOpen ? (prev?.buyPrice || price) : null,

@@ -163,4 +163,43 @@ function computeAlphaScore(history, price, cfg = DEFAULT_CFG, candleCloses = nul
   return { alpha, earlyTrend, sigs, rsiValue: rv };
 }
 
-module.exports = { computeAlphaScore, DEFAULT_CFG };
+// Breakout/momentum scoring — rewards conditions that mean-reversion penalizes.
+// Scores from 0 (never starts at 50). Must reach threshold independently.
+// hasVolSpike: boolean passed in by the caller.
+//
+// Max breakdown: RSI(10) + Bollinger(8) + momentum(≤36) + MACD(10) + volSpike(8) + EMA(6) = 78
+// Requires volSpike to reach 75 (without it, max = 70).
+function computeBreakoutScore(history, price, candleCloses = null, hasVolSpike = false) {
+  if (!history || history.length < 15 || !price) return { breakoutAlpha: 0 };
+  let score = 0;
+
+  // RSI > 65: momentum confirmed (opposite of mean-reversion penalty)
+  const rv = rsi(history);
+  if (rv !== null && rv > 65) score += 10;
+
+  // Price above Bollinger upper: breakout confirmed
+  const bb = bollinger(history);
+  if (bb && price > bb.upper) score += 8;
+
+  // Momentum: +6 per percent above 3%, capped at 42 (equivalent to 10% above = 13% total)
+  // Cap at 42 so the 5 non-Bollinger factors can collectively reach 75 during strong pumps.
+  const mom = momentum(history, 10);
+  if (mom !== null && mom > 3) score += Math.min((mom - 3) * 6, 42);
+
+  // MACD bullish and expanding
+  const macdSrc = (candleCloses && candleCloses.length >= 26) ? candleCloses : history;
+  const mn = macd(macdSrc), mp = macdSrc.length > 2 ? macd(macdSrc.slice(0, -1)) : null;
+  if (mn && mp && mn.line > 0 && mn.line > mp.line) score += 10;
+
+  // Volume spike (passed from caller's rolling-baseline detector)
+  if (hasVolSpike) score += 8;
+
+  // EMA9 > EMA21 > EMA50: full bull alignment
+  const e9 = ema(history, 9), e21 = ema(history, 21);
+  const e50v = (candleCloses && candleCloses.length >= 50) ? ema(candleCloses, 50) : ema(history, 50);
+  if (e9 && e21 && e50v && e9 > e21 && e21 > e50v) score += 6;
+
+  return { breakoutAlpha: Math.max(0, Math.min(100, Math.round(score))) };
+}
+
+module.exports = { computeAlphaScore, computeBreakoutScore, DEFAULT_CFG };
