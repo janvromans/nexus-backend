@@ -18,7 +18,6 @@ let candleMapCache  = {}; // { coinId: [{timestamp,open,high,low,close,volume}] 
 // ── Signal Block Counters ─────────────────────────────────────────────────────
 // Count confirmed BUY signals blocked at each filter stage — reset in daily report
 let btcBearBlockedToday      = 0;
-let sentimentBlockedToday    = 0;
 let volumeBlockedToday       = 0;
 let hourlyTrendBlockedToday  = 0;
 
@@ -223,10 +222,9 @@ function updateBtcTrend(btcHistory) {
 const coinCache = { data: [], updatedAt: null };
 module.exports.getCoinCache = () => coinCache;
 
-// Market-wide sentiment — raises BUY bar when market is broadly bearish
-// Tiered: NORMAL(<55% bearish)=α≥75, WARNING(≥55%)=α≥75, SEVERE(≥70%)=α≥80
-// Never fully blocks — strong breakouts always get through
-let marketSentiment = { bearishPct: 0, tier: 'NORMAL', buyOverride: 75, updatedAt: null };
+// Market-wide sentiment — tracks tier for reporting only (no BUY bar impact)
+// Tiered: NORMAL(<55% bearish), WARNING(≥55%), SEVERE(≥70%) — all use base α≥75
+let marketSentiment = { bearishPct: 0, tier: 'NORMAL', updatedAt: null };
 
 // Weak coins — hardcoded from accuracy tracker (≥5 cycles, <25% WR, negative avg return)
 // Will be replaced with dynamic DB detection in Phase 2 (after 50+ clean cycles)
@@ -249,23 +247,23 @@ function refreshWeakCoinCache() {
 }
 
 function getSentimentTier(bearishPct) {
-  if (bearishPct >= 70) return { tier: 'SEVERE',  buyOverride: 80 };
-  if (bearishPct >= 55) return { tier: 'WARNING', buyOverride: 75 };
-  return                       { tier: 'NORMAL',  buyOverride: 75 };
+  if (bearishPct >= 70) return { tier: 'SEVERE'  };
+  if (bearishPct >= 55) return { tier: 'WARNING' };
+  return                       { tier: 'NORMAL'  };
 }
 
 function updateMarketSentiment(allAlphas) {
   if (!allAlphas || allAlphas.length < 10) return;
   const bearish = allAlphas.filter(a => a <= 40).length;
   const bearishPct = Math.round((bearish / allAlphas.length) * 100);
-  const { tier, buyOverride } = getSentimentTier(bearishPct);
+  const { tier } = getSentimentTier(bearishPct);
   const prev = marketSentiment.tier;
-  marketSentiment = { bearishPct, tier, buyOverride, updatedAt: Date.now() };
+  marketSentiment = { bearishPct, tier, updatedAt: Date.now() };
   if (prev !== tier) {
-    console.log(`  MARKET SENTIMENT: ${bearishPct}% bearish → ${prev} → ${tier} (BUY bar now α≥${buyOverride})`);
-    if (tier === 'SEVERE')       sendTelegram(`[ MARKET SEVERE ]\n${bearishPct}% of coins bearish\nBUY bar raised to α≥80 — only strong breakouts`);
-    else if (tier === 'WARNING') sendTelegram(`[ MARKET WARNING ]\n${bearishPct}% of coins bearish\nBUY bar raised to α≥75 — selective entries only`);
-    else                         sendTelegram(`[ MARKET RECOVERY ]\nBearish coins dropped to ${bearishPct}%\nBUY bar back to normal α≥75`);
+    console.log(`  MARKET SENTIMENT: ${bearishPct}% bearish → ${prev} → ${tier} (reporting only, BUY bar unchanged α≥75)`);
+    if (tier === 'SEVERE')       sendTelegram(`[ MARKET SEVERE ]\n${bearishPct}% of coins bearish\n(reporting only — BUY bar unchanged α≥75)`);
+    else if (tier === 'WARNING') sendTelegram(`[ MARKET WARNING ]\n${bearishPct}% of coins bearish\n(reporting only — BUY bar unchanged α≥75)`);
+    else                         sendTelegram(`[ MARKET RECOVERY ]\nBearish coins dropped to ${bearishPct}%`);
   }
 }
 
@@ -738,12 +736,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
         prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
         return;
       }
-      if (marketSentiment.buyOverride > effectiveBuyThresh && alpha < marketSentiment.buyOverride) {
-        sentimentBlockedToday++;
-        console.log(`  BUY BLOCKED (market ${marketSentiment.bearishPct}% bearish, need α≥${marketSentiment.buyOverride}) ${symbol.padEnd(8)} a=${alpha} thresh=${effectiveBuyThresh} [sentiment-blocked today: ${sentimentBlockedToday}]`);
-        prevState[id] = { alpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
-        return;
-      }
+
       // Volume spike confirmation — require elevated volume vs. rolling baseline
       const volSpike = hasVolumeSpike(id, coin.volume24h || 0);
       if (!volSpike) {
@@ -1103,7 +1096,6 @@ async function computeDailyReport() {
 
     msg += `\n🔍 FILTERS (today)\n`;
     msg += `BTC bear:    ${btcBearBlockedToday} BUY signals blocked\n`;
-    msg += `Sentiment:   ${sentimentBlockedToday} BUY signals blocked\n`;
     msg += `Vol spike:   ${volumeBlockedToday} BUY signals blocked\n`;
     msg += `Hourly trend:${hourlyTrendBlockedToday} BUY signals blocked\n`;
     const threshAdjusted = Object.keys(coinThresholdBoosts).length;
@@ -1118,7 +1110,6 @@ async function computeDailyReport() {
 
     await sendTelegram(msg);
     btcBearBlockedToday      = 0; // reset daily counters
-    sentimentBlockedToday    = 0;
     volumeBlockedToday       = 0;
     hourlyTrendBlockedToday  = 0;
     console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR)`);
@@ -1197,7 +1188,6 @@ async function computeHealthReport() {
       ``,
       `🔍 Filters (since midnight)`,
       `  BTC bear:       ${btcBearBlockedToday} blocked`,
-      `  Sentiment:      ${sentimentBlockedToday} blocked`,
       `  Vol spike:      ${volumeBlockedToday} blocked`,
       ``,
       openCount > 0
