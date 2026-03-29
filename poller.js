@@ -224,7 +224,7 @@ const coinCache = { data: [], updatedAt: null };
 module.exports.getCoinCache = () => coinCache;
 
 // Market-wide sentiment — raises BUY bar when market is broadly bearish
-// Tiered: NORMAL(<55% bearish)=α≥75, WARNING(≥55%)=α≥80, SEVERE(≥70%)=α≥85
+// Tiered: NORMAL(<55% bearish)=α≥75, WARNING(≥55%)=α≥75, SEVERE(≥70%)=α≥80
 // Never fully blocks — strong breakouts always get through
 let marketSentiment = { bearishPct: 0, tier: 'NORMAL', buyOverride: 75, updatedAt: null };
 
@@ -249,8 +249,8 @@ function refreshWeakCoinCache() {
 }
 
 function getSentimentTier(bearishPct) {
-  if (bearishPct >= 70) return { tier: 'SEVERE',  buyOverride: 85 };
-  if (bearishPct >= 55) return { tier: 'WARNING', buyOverride: 77 };
+  if (bearishPct >= 70) return { tier: 'SEVERE',  buyOverride: 80 };
+  if (bearishPct >= 55) return { tier: 'WARNING', buyOverride: 75 };
   return                       { tier: 'NORMAL',  buyOverride: 75 };
 }
 
@@ -263,8 +263,8 @@ function updateMarketSentiment(allAlphas) {
   marketSentiment = { bearishPct, tier, buyOverride, updatedAt: Date.now() };
   if (prev !== tier) {
     console.log(`  MARKET SENTIMENT: ${bearishPct}% bearish → ${prev} → ${tier} (BUY bar now α≥${buyOverride})`);
-    if (tier === 'SEVERE')       sendTelegram(`[ MARKET SEVERE ]\n${bearishPct}% of coins bearish\nBUY bar raised to α≥85 — only strong breakouts`);
-    else if (tier === 'WARNING') sendTelegram(`[ MARKET WARNING ]\n${bearishPct}% of coins bearish\nBUY bar raised to α≥80 — selective entries only`);
+    if (tier === 'SEVERE')       sendTelegram(`[ MARKET SEVERE ]\n${bearishPct}% of coins bearish\nBUY bar raised to α≥80 — only strong breakouts`);
+    else if (tier === 'WARNING') sendTelegram(`[ MARKET WARNING ]\n${bearishPct}% of coins bearish\nBUY bar raised to α≥75 — selective entries only`);
     else                         sendTelegram(`[ MARKET RECOVERY ]\nBearish coins dropped to ${bearishPct}%\nBUY bar back to normal α≥75`);
   }
 }
