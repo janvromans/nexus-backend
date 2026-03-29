@@ -223,7 +223,7 @@ const coinCache = { data: [], updatedAt: null };
 module.exports.getCoinCache = () => coinCache;
 
 // Market-wide sentiment — tracks tier for reporting only (no BUY bar impact)
-// Tiered: NORMAL(<55% bearish), WARNING(≥55%), SEVERE(≥70%) — all use base α≥75
+// Tiered: NORMAL(<55% bearish), WARNING(≥55%), SEVERE(≥70%) — all use base α≥65 (see cfg.alphaThresh)
 let marketSentiment = { bearishPct: 0, tier: 'NORMAL', updatedAt: null };
 
 // Weak coins — hardcoded from accuracy tracker (≥5 cycles, <25% WR, negative avg return)
@@ -260,9 +260,9 @@ function updateMarketSentiment(allAlphas) {
   const prev = marketSentiment.tier;
   marketSentiment = { bearishPct, tier, updatedAt: Date.now() };
   if (prev !== tier) {
-    console.log(`  MARKET SENTIMENT: ${bearishPct}% bearish → ${prev} → ${tier} (reporting only, BUY bar unchanged α≥75)`);
-    if (tier === 'SEVERE')       sendTelegram(`[ MARKET SEVERE ]\n${bearishPct}% of coins bearish\n(reporting only — BUY bar unchanged α≥75)`);
-    else if (tier === 'WARNING') sendTelegram(`[ MARKET WARNING ]\n${bearishPct}% of coins bearish\n(reporting only — BUY bar unchanged α≥75)`);
+    console.log(`  MARKET SENTIMENT: ${bearishPct}% bearish → ${prev} → ${tier} (reporting only, BUY bar unchanged α≥${cfg.alphaThresh})`);
+    if (tier === 'SEVERE')       sendTelegram(`[ MARKET SEVERE ]\n${bearishPct}% of coins bearish\n(reporting only — BUY bar unchanged α≥${cfg.alphaThresh})`);
+    else if (tier === 'WARNING') sendTelegram(`[ MARKET WARNING ]\n${bearishPct}% of coins bearish\n(reporting only — BUY bar unchanged α≥${cfg.alphaThresh})`);
     else                         sendTelegram(`[ MARKET RECOVERY ]\nBearish coins dropped to ${bearishPct}%`);
   }
 }
@@ -980,7 +980,7 @@ async function poll() {
     // Update market-wide sentiment from current alpha scores
     const allAlphas = Object.values(prevState).map(s => s.alpha).filter(a => a != null);
     updateMarketSentiment(allAlphas);
-    console.log(`  Market sentiment: ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}] BUY bar α≥75`);
+    console.log(`  Market sentiment: ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}] BUY bar α≥${cfg.alphaThresh}`);
 
     // Relative strength — coins holding up while market is broadly bearish
     await checkRelativeStrength(coins);
@@ -1188,7 +1188,7 @@ async function computeHealthReport() {
       `📊 Market`,
       `  BTC trend:      ${btcTrend}`,
       `  Sentiment:      ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}]`,
-      `  BUY bar:        α≥75`,
+      `  BUY bar:        α≥${cfg.alphaThresh}`,
       ``,
       `⚡ Last 24h Activity`,
       `  BUY signals:    ${recentBuys}`,
