@@ -758,17 +758,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
         return;
       }
 
-      // Volume spike confirmation — required for both modes
-      // (breakout score mathematically cannot reach 75 without volSpike, so this is consistent)
-      if (!volSpike) {
-        volumeBlockedToday++;
-        const deltas = volumeDeltaHistory[id] || [];
-        const avgDelta = deltas.length ? deltas.reduce((a,b)=>a+b,0)/deltas.length : 0;
-        const curDelta = Math.max(0, (coin.volume24h||0) - (prev.volume24h||0));
-        console.log(`  BUY BLOCKED (no vol spike) ${symbol.padEnd(8)} mr=${alpha} brk=${breakoutAlpha} vol_delta=${Math.round(curDelta)} avg=${Math.round(avgDelta)} need ${VOLUME_SPIKE_MULT}x [blocked today: ${volumeBlockedToday}]`);
-        prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
-        return;
-      }
+      // Volume spike check disabled — always pass (re-enable after 50 cycles)
       // Multi-timeframe confirmation — hourly EMA trend:
       //   STRONG_BEAR (gap >2%): hard block
       //   BEAR (gap ≤2%): apply -5 penalty to effective alpha but allow if still above threshold
