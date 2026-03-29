@@ -6,7 +6,7 @@ const DEFAULT_CFG = {
   alphaMacdCrossWeight: 3,
   alphaMomMaxGood: 15,
   alphaEmaPartialBonus: 2,
-  alphaThresh: 75,
+  alphaThresh: 65, // temporarily lowered from 75 — re-raise after data collection
   alphaSellThresh: 28,
 };
 
