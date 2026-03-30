@@ -57,12 +57,14 @@ async function init() {
     );
 
     CREATE TABLE IF NOT EXISTS coin_state (
-      coin_id       TEXT PRIMARY KEY,
-      symbol        TEXT NOT NULL,
-      alpha         INTEGER NOT NULL DEFAULT 50,
-      price         REAL NOT NULL DEFAULT 0,
-      updated_at    TIMESTAMPTZ DEFAULT NOW()
+      coin_id           TEXT PRIMARY KEY,
+      symbol            TEXT NOT NULL,
+      alpha             INTEGER NOT NULL DEFAULT 50,
+      price             REAL NOT NULL DEFAULT 0,
+      consecutive_above INTEGER NOT NULL DEFAULT 0,
+      updated_at        TIMESTAMPTZ DEFAULT NOW()
     );
+    ALTER TABLE coin_state ADD COLUMN IF NOT EXISTS consecutive_above INTEGER NOT NULL DEFAULT 0;
 
     CREATE TABLE IF NOT EXISTS candles (
       coin_id   TEXT NOT NULL,
@@ -266,14 +268,14 @@ async function purgeTriggersBeforeDate(isoDate) {
 }
 
 // ── Coin State Persistence ────────────────────────────────────────────────────
-// Saves current alpha/price for a coin — survives restarts
-async function saveCoinState(coinId, symbol, alpha, price) {
+// Saves current alpha/price/consecutiveAbove for a coin — survives restarts
+async function saveCoinState(coinId, symbol, alpha, price, consecutiveAbove = 0) {
   await pool.query(
-    `INSERT INTO coin_state (coin_id, symbol, alpha, price, updated_at)
-     VALUES ($1,$2,$3,$4,NOW())
+    `INSERT INTO coin_state (coin_id, symbol, alpha, price, consecutive_above, updated_at)
+     VALUES ($1,$2,$3,$4,$5,NOW())
      ON CONFLICT (coin_id) DO UPDATE SET
-       symbol=$2, alpha=$3, price=$4, updated_at=NOW()`,
-    [coinId, symbol, alpha, price]
+       symbol=$2, alpha=$3, price=$4, consecutive_above=$5, updated_at=NOW()`,
+    [coinId, symbol, alpha, price, consecutiveAbove]
   );
 }
 

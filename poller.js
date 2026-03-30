@@ -707,9 +707,6 @@ async function processCoin(coin, storedHistory, candleHistory) {
 
   await db.insertPricePoint({ coinId: id, price, alpha });
 
-  // Persist alpha score to DB — survives restarts
-  await db.saveCoinState(id, symbol, alpha, price);
-
   // Record volume delta for spike detection (must happen before prevState update)
   recordVolumeDelta(id, coin.volume24h || 0);
 
@@ -735,6 +732,9 @@ async function processCoin(coin, storedHistory, candleHistory) {
   const prevConsecutive = prev?.consecutiveAbove || 0;
   const withinTolerance = prevConsecutive >= 1 && (alpha >= effectiveBuyThresh - 3 || breakoutAlpha >= effectiveBuyThresh - 3);
   let consecutiveAbove = (nowAboveBuy || withinTolerance) ? (prevConsecutive + 1) : 0;
+
+  // Persist alpha/price/consecutiveAbove — consecutiveAbove survives restarts for confirming coins
+  await db.saveCoinState(id, symbol, alpha, price, consecutiveAbove);
 
   if (prev) {
     const wasAboveBuy  = prev.alpha >= effectiveBuyThresh || (prev.breakoutAlpha || 0) >= effectiveBuyThresh;
@@ -1319,13 +1319,17 @@ async function start() {
           price: state.price,
           rsiValue: null,
           hasOpenBuy: false,
-          consecutiveAbove: 0,
+          consecutiveAbove: state.consecutive_above || 0,
           bigMoverAlerted: [],
         };
         restored++;
       }
     }
-    if (restored > 0) console.log(`  Restored ${restored} coin alpha states from DB`);
+    if (restored > 0) {
+      const confirming = Object.entries(prevState).filter(([,s]) => !s.hasOpenBuy && s.consecutiveAbove > 0);
+      const confirmingNote = confirming.length > 0 ? ` (${confirming.map(([,s]) => `${s.symbol||'?'}=${s.consecutiveAbove}`).join(', ')} confirming)` : '';
+      console.log(`  Restored ${restored} coin alpha states from DB${confirmingNote}`);
+    }
   } catch(e) {
     console.error('Failed to restore coin states:', e.message);
   }
