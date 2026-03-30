@@ -11,7 +11,7 @@
 //   totalPnl      — sum of all closed trade P&L (%)
 //   avgReturn     — mean P&L per closed trade (%)
 //
-// NOTE: price_history is capped at 48h (~1920 data points at 90s intervals).
+// NOTE: price_history is capped at 24h (~960 data points at 90s intervals).
 // This gives meaningful intra-session signal validation but is not a substitute
 // for multi-week backtesting. A candle_history table would be needed for that.
 

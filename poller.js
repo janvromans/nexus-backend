@@ -964,7 +964,7 @@ async function poll() {
 
     // Single bulk fetch — replaces N sequential getPriceHistory queries
     const bulkStart = Date.now();
-    const historyMap = await db.getBulkPriceHistory(48);
+    const historyMap = await db.getBulkPriceHistory(24);
     const bulkCoins = Object.keys(historyMap).length;
     const bulkRows  = Object.values(historyMap).reduce((s, h) => s + h.length, 0);
     console.log(`  History: ${bulkRows} rows / ${bulkCoins} coins in ${Date.now()-bulkStart}ms (bulk, was ~${coins.length} queries)`);
@@ -982,8 +982,8 @@ async function poll() {
       }
     }
 
-    // Purge old price history — 48h retention (candles cover 7-day trend context)
-    await db.purgePriceHistoryBulk(48);
+    // Purge old price history — 24h retention (candles cover 7-day trend context)
+    await db.purgePriceHistoryBulk(24);
 
     // Update market-wide sentiment from current alpha scores
     const allAlphas = Object.values(prevState).map(s => s.alpha).filter(a => a != null);
