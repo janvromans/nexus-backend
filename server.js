@@ -30,13 +30,25 @@ function auth(req, res, next) {
 }
 
 // ── GET /api/triggers ─────────────────────────────────────────────────────────
-// Returns trigger log for specified coins
-// Query: ?coins=icp,ethereum,dogecoin&limit=200
+// Returns trigger log. Two modes:
+//   No coins param : flat list of most recent triggers (for analytics)
+//                    GET /api/triggers?limit=200
+//   With coins     : grouped by coin (for frontend chart overlay)
+//                    GET /api/triggers?coins=bitcoin,ethereum&limit=500
 app.get('/api/triggers', auth, async (req, res) => {
   try {
     const coins = (req.query.coins || '').split(',').map(s => s.trim()).filter(Boolean);
-    if (!coins.length) return res.json({});
-    const limit = Math.min(parseInt(req.query.limit) || 500, 1000);
+    const limit = Math.min(parseInt(req.query.limit) || 200, 1000);
+
+    // No coin filter — return flat list sorted newest-first (analytics / cycle review)
+    if (!coins.length) {
+      const rows = await db.getAllTriggers(limit);
+      return res.json(rows.map(r => ({
+        coinId: r.coin_id, symbol: r.symbol, type: r.type,
+        price: r.price, alpha: r.alpha, reason: r.reason, time: r.fired_at,
+      })));
+    }
+
     const rows  = await db.getTriggers(coins, limit);
 
     // Group by coin_id and format for frontend
