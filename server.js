@@ -73,6 +73,13 @@ app.get('/api/history/:coinId', auth, async (req, res) => {
   }
 });
 
+// ── GET /api/config ───────────────────────────────────────────────────────────
+// Returns active runtime config values for the frontend
+app.get('/api/config', auth, (req, res) => {
+  const { DEFAULT_CFG } = require('./alpha');
+  res.json({ alphaThresh: DEFAULT_CFG.alphaThresh, alphaSellThresh: DEFAULT_CFG.alphaSellThresh });
+});
+
 // ── GET /api/status ───────────────────────────────────────────────────────────
 // Health check — returns uptime and last poll time
 const startTime = new Date();

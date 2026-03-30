@@ -296,15 +296,31 @@ function calcRsi(prices, period = 14) {
 
 async function sendTelegram(message) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
+  const payload = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message }),
+  };
+  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
   try {
-    const res = await fetchWithTimeout(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message }),
-    }, 10000);
-    if (!res.ok) console.error('Telegram error:', await res.text());
+    const res = await fetchWithTimeout(url, payload, 10000);
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('Telegram error:', errText);
+      // Retry once after 5s
+      await new Promise(r => setTimeout(r, 5000));
+      const retry = await fetchWithTimeout(url, payload, 10000);
+      if (!retry.ok) console.error('Telegram retry failed:', await retry.text());
+    }
   } catch (e) {
-    console.error('Telegram send failed:', e.message);
+    console.error('Telegram send failed:', e.message, '— retrying in 5s');
+    await new Promise(r => setTimeout(r, 5000));
+    try {
+      const retry = await fetchWithTimeout(url, payload, 10000);
+      if (!retry.ok) console.error('Telegram retry failed:', await retry.text());
+    } catch (e2) {
+      console.error('Telegram retry also failed:', e2.message);
+    }
   }
 }
 
