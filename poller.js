@@ -799,7 +799,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
       await db.insertTrigger({ coinId: id, symbol, type: 'BUY', price, alpha, reason });
       await db.addTrackedCoin({ coinId: id, symbol, name, autoAdded: true });
       const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : btcTrend === 'BEAR' ? '\nBTC trend: BEARISH' : '';
-      const holdMin = Math.round(MIN_HOLD_MS / 60000);
+      const MIN_HOLD_MS_BUY = getMinHoldMs(id, coin.rank);
+      const holdMin = Math.round(MIN_HOLD_MS_BUY / 60000);
       const msg = `[ BUY SIGNAL ] ${symbol}${modeNote}\nPrice: $${fmtPrice(price)}\nMean-Rev α: ${alpha}  Breakout α: ${breakoutAlpha}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'}${coinBoostNote})\nVolume: ${volRatio}x avg (spike confirmed)\nMin hold: ${holdMin}min\n${reason}${btcNote}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
       console.log(`  BUY       ${symbol.padEnd(8)} ${mode} mr=${alpha} brk=${breakoutAlpha} thresh=${effectiveBuyThresh} [ATR:${volTier} MC:${coin.rank||'?'}${coinBoostNote}] vol=${volRatio}x hold≥${holdMin}m @ $${price} [BTC:${btcTrend}]`);
