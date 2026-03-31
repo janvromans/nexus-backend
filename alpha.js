@@ -59,9 +59,42 @@ function momentum(prices, period = 10) {
   return old > 0 ? ((cur - old) / old) * 100 : null;
 }
 
-// candleCloses: optional array of hourly close prices (oldest-first) for EMA50 + MACD.
+// ADX (Average Directional Index) — measures trend strength from OHLC candles.
+// Uses Wilder's 14-period smoothing. Returns 0–100 (typically 0–60 in practice).
+// candles: array of {high, low, close}, oldest-first.
+function adx(candles, period = 14) {
+  if (!candles || candles.length < period * 2) return null;
+  const trs = [], plusDMs = [], minusDMs = [];
+  for (let i = 1; i < candles.length; i++) {
+    const { high: h, low: l } = candles[i];
+    const { high: ph, low: pl, close: pc } = candles[i - 1];
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+    const up = h - ph, down = pl - l;
+    plusDMs.push(up > down && up > 0 ? up : 0);
+    minusDMs.push(down > up && down > 0 ? down : 0);
+  }
+  const wilderSmooth = (arr) => {
+    let s = arr.slice(0, period).reduce((a, b) => a + b, 0);
+    const out = [s];
+    for (let i = period; i < arr.length; i++) { s = s - s / period + arr[i]; out.push(s); }
+    return out;
+  };
+  const smTR = wilderSmooth(trs), smPlus = wilderSmooth(plusDMs), smMinus = wilderSmooth(minusDMs);
+  const dxArr = [];
+  for (let i = 0; i < smTR.length; i++) {
+    if (smTR[i] === 0) continue;
+    const pDI = (smPlus[i] / smTR[i]) * 100, mDI = (smMinus[i] / smTR[i]) * 100;
+    const dSum = pDI + mDI;
+    dxArr.push(dSum === 0 ? 0 : (Math.abs(pDI - mDI) / dSum) * 100);
+  }
+  if (dxArr.length < period) return null;
+  return dxArr.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+
+// candleCloses: optional array of hourly close prices (oldest-first) for EMA50/EMA200 + MACD.
+// candles: optional array of {high, low, close} (oldest-first) for ADX.
 // Falls back to 90s price_history when candles aren't available yet.
-function computeAlphaScore(history, price, cfg = DEFAULT_CFG, candleCloses = null) {
+function computeAlphaScore(history, price, cfg = DEFAULT_CFG, candleCloses = null, candles = null) {
   if (!history || history.length < 15 || !price) return { alpha: 50, earlyTrend: false };
   let alpha = 50;
   const sigs = {};
@@ -153,6 +186,25 @@ function computeAlphaScore(history, price, cfg = DEFAULT_CFG, candleCloses = nul
     else if (st.k > 70 && !kRising)               { alpha -= 8;  sigs.stoch = 'OVERBOUGHT'; }
     else if (st.k >= 30 && st.k <= 60 && kRising) { alpha += 3;  sigs.stoch = 'MID_RISING'; }
     else { sigs.stoch = 'NEUTRAL'; }
+  }
+
+  // EMA200 — long-term trend from hourly candles (requires 200+ candles ≈ 8.5 days)
+  // price above EMA200 = long-term uptrend; approaching = recovering; far below = structural weakness
+  const e200 = (candleCloses && candleCloses.length >= 200) ? ema(candleCloses, 200) : null;
+  if (e200 !== null) {
+    const pct = (price - e200) / e200 * 100;
+    if (pct > 0)      { alpha += 8; sigs.ema200 = 'ABOVE'; }
+    else if (pct > -8) { alpha += 3; sigs.ema200 = 'APPROACHING'; }
+    else               { alpha -= 5; sigs.ema200 = 'FAR_BELOW'; }
+  }
+
+  // ADX — trend strength from hourly OHLC candles (Wilder 14-period)
+  // Strong trend (>25) = directional conviction; weak (<15) = choppy/sideways market
+  const adxVal = adx(candles);
+  if (adxVal !== null) {
+    if (adxVal > 25)       { alpha += 6; sigs.adx = 'STRONG'; }
+    else if (adxVal >= 15) { alpha += 2; sigs.adx = 'MODERATE'; }
+    else                   { alpha -= 3; sigs.adx = 'WEAK'; }
   }
 
   // Early trend detection

@@ -291,6 +291,81 @@ function isJunk(id, price) {
   return false;
 }
 
+// ── Sector Tagging ────────────────────────────────────────────────────────────
+// Maps coin IDs → sector. Used to find top-performing sectors each poll cycle.
+// Coins in the top 2 sectors get +5 to alpha (sector momentum bonus).
+const COIN_SECTORS = {
+  // L1 — base layer blockchains
+  'bitcoin':'L1','ethereum':'L1','solana':'L1','cardano':'L1','avalanche-2':'L1',
+  'near':'L1','cosmos':'L1','algorand':'L1','hedera-hashgraph':'L1','tron':'L1',
+  'toncoin':'L1','aptos':'L1','sui':'L1','flow':'L1','neo':'L1','kava':'L1',
+  'kaspa':'L1','internet-computer':'L1','stellar':'L1','ripple':'L1',
+  'bitcoin-cash':'L1','litecoin':'L1','ethereum-classic':'L1','vechain':'L1',
+  'polkadot':'L1','filecoin':'L1','theta-token':'L1','bittorrent':'L1',
+  'flare-networks':'L1','xdce-crowd-sale':'L1','decred':'L1',
+  // L2 — scaling / rollups
+  'polygon-ecosystem-token':'L2','arbitrum':'L2','optimism':'L2','starknet':'L2',
+  'zksync':'L2','scroll':'L2','immutable-x':'L2','layerzero':'L2','loopring':'L2','mantle':'L2',
+  // DeFi — decentralised finance protocols
+  'uniswap':'DeFi','aave':'DeFi','curve-dao-token':'DeFi','compound-governance-token':'DeFi',
+  'maker':'DeFi','synthetix-network-token':'DeFi','yearn-finance':'DeFi','1inch':'DeFi',
+  'dydx':'DeFi','balancer':'DeFi','sushi':'DeFi','bancor':'DeFi','uma':'DeFi','ren':'DeFi',
+  'jupiter-exchange-solana':'DeFi','hyperliquid':'DeFi','ethena':'DeFi',
+  'rocketpool':'DeFi','lido-dao':'DeFi','frax-share':'DeFi','liquity':'DeFi',
+  'origin-dollar':'DeFi','pendle':'DeFi','swell-network':'DeFi','stader':'DeFi',
+  'jito-governance-token':'DeFi','harvest-finance':'DeFi','keep3rv1':'DeFi',
+  'alpha-finance':'DeFi','barnbridge':'DeFi','ribbon-finance':'DeFi','dopex':'DeFi',
+  'jones-dao':'DeFi','umami-finance':'DeFi','plutus-dao':'DeFi','equilibria-finance':'DeFi',
+  'penpie':'DeFi','camelot-dex':'DeFi','radiant-capital':'DeFi','factor-dao':'DeFi',
+  'idle':'DeFi','olympus':'DeFi','ampleforth':'DeFi','fei-protocol':'DeFi',
+  // AI — artificial intelligence / compute
+  'fetch-ai':'AI','ocean-protocol':'AI','render-token':'AI','bittensor':'AI',
+  'the-graph':'AI','numeraire':'AI','rndr':'AI','worldcoin-wld':'AI',
+  'woo-network':'AI','cartesi':'AI','lpt':'AI','grt':'AI','ankr':'AI',
+  // Meme — community/meme tokens
+  'dogecoin':'Meme','shiba-inu':'Meme','pepe':'Meme','bonk':'Meme','dogwifcoin':'Meme',
+  'popcat':'Meme','brett':'Meme','mog-coin':'Meme','turbo':'Meme','floki':'Meme',
+  'babydoge':'Meme','neiro-ethereum':'Meme','official-trump':'Meme',
+  'melania-meme':'Meme','fartcoin':'Meme','non-playable-coin':'Meme',
+  // Exchange — centralised exchange tokens
+  'binancecoin':'Exchange','whitebit':'Exchange',
+  // Privacy — privacy-preserving coins
+  'monero':'Privacy','zcash':'Privacy','haven-protocol':'Privacy','beam':'Privacy',
+  'grin':'Privacy','firo':'Privacy','dusk-network':'Privacy','secret':'Privacy',
+  'beldex':'Privacy','oasis-network':'Privacy','tornado-cash':'Privacy',
+  // Gaming — blockchain gaming & metaverse
+  'axie-infinity':'Gaming','decentraland':'Gaming','sandbox':'Gaming','gala':'Gaming',
+  'chiliz':'Gaming','smooth-love-potion':'Gaming','gods-unchained':'Gaming',
+  'illuvium':'Gaming','ultra':'Gaming','wax':'Gaming','enjincoin':'Gaming',
+  'theta-fuel':'Gaming',
+  // RWA — real-world assets, oracles & infrastructure data
+  'chainlink':'RWA','ondo-finance':'RWA','band-protocol':'RWA','dia':'RWA',
+  'api3':'RWA','quant-network':'RWA','reserve-rights-token':'RWA',
+  'injective-protocol':'RWA','kyber-network-crystal':'RWA','0x':'RWA','airswap':'RWA',
+  'bluzelle':'RWA','nucypher':'RWA','keep-network':'RWA','nest':'RWA',
+};
+
+// Top 2 performing sectors this cycle (updated each poll, used in processCoin)
+let topSectors = new Set();
+let sectorStrengthCache = {}; // sector → avg 24h % change (for daily report)
+
+function updateSectorStrength(coins) {
+  const sums = {}, counts = {};
+  for (const coin of coins) {
+    const sector = COIN_SECTORS[coin.id];
+    if (!sector || coin.change == null) continue;
+    sums[sector]   = (sums[sector]   || 0) + coin.change;
+    counts[sector] = (counts[sector] || 0) + 1;
+  }
+  const avgs = {};
+  for (const s of Object.keys(sums)) avgs[s] = sums[s] / counts[s];
+  sectorStrengthCache = avgs;
+  const sorted = Object.entries(avgs).sort((a, b) => b[1] - a[1]);
+  topSectors = new Set(sorted.slice(0, 2).map(([s]) => s));
+  const line = sorted.map(([s, v]) => `${s}:${v >= 0 ? '+' : ''}${v.toFixed(1)}%`).join(' | ');
+  console.log(`  Sectors: ${line}  ★top2: ${[...topSectors].join(', ')}`);
+}
+
 function calcRsi(prices, period = 14) {
   if (!prices || prices.length < period + 1) return null;
   const ch  = prices.slice(1).map((p, i) => p - prices[i]);
@@ -632,7 +707,7 @@ function hourlyEmaTrend(candleHistory) {
 // Fetch 1h OHLCV candles from Bitvavo for all active coins — runs once per hour.
 // Batches requests (10 at a time) to avoid hammering the API.
 async function fetchAndStoreCandles(coins) {
-  const LIMIT      = 168; // 7 days
+  const LIMIT      = 210; // 8.75 days — enough for EMA200 (needs 200 candles)
   const BATCH_SIZE = 10;
   let fetched = 0, failed = 0;
   for (let i = 0; i < coins.length; i += BATCH_SIZE) {
@@ -701,7 +776,20 @@ async function processCoin(coin, storedHistory, candleHistory) {
     // If stale but candles unavailable, fall through and use existing price_history
   }
 
-  const { alpha, earlyTrend } = computeAlphaScore(effectiveHistory, price, cfg, effectiveCandleCloses);
+  let { alpha, earlyTrend } = computeAlphaScore(effectiveHistory, price, cfg, effectiveCandleCloses, candleHistory.length >= 28 ? candleHistory : null);
+
+  // Relative strength bonus: +10 when coin is rising while ≥70% of market is falling.
+  // Strengthens correlation-breakers beyond just alerting — makes them primary BUY candidates.
+  if (relStrengthRisingCount[id] >= 3 && marketSentiment.bearishPct >= 70 && coin.change > 0) {
+    alpha = Math.min(100, alpha + 10);
+  }
+
+  // Sector momentum bonus: +5 for coins in the top 2 performing sectors this cycle.
+  const coinSector = COIN_SECTORS[id];
+  if (coinSector && topSectors.has(coinSector)) {
+    alpha = Math.min(100, alpha + 5);
+  }
+
   const rsiNow = calcRsi(effectiveHistory);
 
   // ATR volatility filter — compute effective BUY threshold
@@ -995,11 +1083,12 @@ async function poll() {
     }
 
     // Fetch hourly candles once per hour — update in-memory cache after fetch
+    // 9-day retention (216 candles) gives enough history to compute EMA200
     if (Date.now() - lastCandleFetch >= 60 * 60 * 1000) {
       console.log('  Fetching hourly candles...');
       await fetchAndStoreCandles(coins);
-      candleMapCache = await db.getBulkCandles(7);
-      await db.purgeOldCandles(7);
+      candleMapCache = await db.getBulkCandles(9);
+      await db.purgeOldCandles(9);
       lastCandleFetch = Date.now();
       const candleCoins = Object.keys(candleMapCache).length;
       const candleRows  = Object.values(candleMapCache).reduce((s, h) => s + h.length, 0);
@@ -1016,6 +1105,9 @@ async function poll() {
     // Update BTC trend filter — data comes free from the bulk fetch
     updateBtcTrend(historyMap['bitcoin'] || []);
     console.log(`  BTC trend: ${btcTrend}`);
+
+    // Update sector strength — determines which sectors get the +5 alpha bonus
+    updateSectorStrength(coins);
 
     // Process each coin
     for (const coin of coins) {
@@ -1166,6 +1258,15 @@ async function computeDailyReport() {
       const raised  = Object.values(coinThresholdBoosts).filter(b => b > 0).length;
       const lowered = Object.values(coinThresholdBoosts).filter(b => b < 0).length;
       msg += `Coin thresholds: ${raised} raised, ${lowered} lowered (${threshAdjusted} total)\n`;
+    }
+
+    if (Object.keys(sectorStrengthCache).length > 0) {
+      const sectorRanked = Object.entries(sectorStrengthCache).sort((a, b) => b[1] - a[1]);
+      msg += `\n📊 SECTOR STRENGTH (24h avg)\n`;
+      for (const [sector, avg] of sectorRanked) {
+        const star = topSectors.has(sector) ? ' ★' : '';
+        msg += `${sector.padEnd(10)} ${avg >= 0 ? '+' : ''}${avg.toFixed(1)}%${star}\n`;
+      }
     }
 
     msg += `\n🗺️ ROADMAP\n`;
