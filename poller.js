@@ -958,7 +958,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
     }
   }
 
-  const keepOpen = prev?.hasOpenBuy && alpha >= cfg.alphaSellThresh;
+  const keepOpen = prev?.hasOpenBuy || false;
   prevState[id] = {
     alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow,
     hasOpenBuy: keepOpen || false,
