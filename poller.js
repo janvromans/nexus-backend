@@ -21,6 +21,7 @@ let volumeBlockedToday       = 0;
 let hourlyTrendBlockedToday  = 0;
 let rankBlockedToday         = 0;
 let cooldownBlockedToday     = 0;
+let liquidityBlockedToday    = 0;
 
 // ── Relative Strength Detection ──────────────────────────────────────────────
 // Coins up >3% in 24h while market is >60% bearish — move independently of market
@@ -868,7 +869,19 @@ async function processCoin(coin, storedHistory, candleHistory) {
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove, consecutiveBelow };
         return;
       }
-      // 2. Market cap rank floor — block coins ranked below 300
+      // 2. Liquidity filter — block coins with dangerously low 24h EUR volume
+      const LIQUIDITY_BLOCK_EUR  = 5000;
+      const LIQUIDITY_WARN_EUR   = 25000;
+      const vol24h = coin.volume24h || 0;
+      if (vol24h < LIQUIDITY_BLOCK_EUR) {
+        liquidityBlockedToday++;
+        console.log(`  BUY BLOCKED (low liquidity: €${Math.round(vol24h)} 24h vol) ${symbol.padEnd(8)}`);
+        prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove, consecutiveBelow };
+        return;
+      }
+      const liquidityWarning = vol24h < LIQUIDITY_WARN_EUR ? `\n⚠️ Low liquidity: €${Math.round(vol24h).toLocaleString()} 24h vol` : '';
+
+      // 3. Market cap rank floor — block coins ranked below 300
       const MC_RANK_FLOOR = 300;
       if (coin.rank && coin.rank > MC_RANK_FLOOR) {
         rankBlockedToday++;
@@ -929,7 +942,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
       const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : btcTrend === 'BEAR' ? '\nBTC trend: BEARISH' : '';
       const MIN_HOLD_MS_BUY = getMinHoldMs(id, coin.rank);
       const holdMin = Math.round(MIN_HOLD_MS_BUY / 60000);
-      const msg = `[ BUY SIGNAL ] ${symbol}${modeNote}\nPrice: $${fmtPrice(price)}\nMean-Rev α: ${alpha}  Breakout α: ${breakoutAlpha}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'}${coinBoostNote})\nVolume: ${volRatio}x avg (spike confirmed)\nMin hold: ${holdMin}min\n${reason}${btcNote}\nNow tracking for cycle data.`;
+      const msg = `[ BUY SIGNAL ] ${symbol}${modeNote}\nPrice: $${fmtPrice(price)}\nMean-Rev α: ${alpha}  Breakout α: ${breakoutAlpha}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'}${coinBoostNote})\nVolume: ${volRatio}x avg (spike confirmed)\nMin hold: ${holdMin}min\n${reason}${btcNote}${liquidityWarning}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
       console.log(`  BUY       ${symbol.padEnd(8)} ${mode} mr=${alpha} brk=${breakoutAlpha} thresh=${effectiveBuyThresh} [ATR:${volTier} MC:${coin.rank||'?'}${coinBoostNote}] vol=${volRatio}x hold≥${holdMin}m @ $${price} [BTC:${btcTrend}]`);
       const newState = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, consecutiveAbove, consecutiveBelow: 0, bigMoverAlerted: [] };
@@ -1250,6 +1263,7 @@ async function computeDailyReport() {
 
     msg += `\n🔍 FILTERS (today)\n`;
     msg += `Vol spike:   ${volumeBlockedToday} BUY signals blocked\n`;
+    msg += `Liquidity:   ${liquidityBlockedToday} BUY signals blocked (<€5k 24h vol)\n`;
     msg += `Hourly trend:${hourlyTrendBlockedToday} BUY signals blocked\n`;
     msg += `MC rank:     ${rankBlockedToday} BUY signals blocked (rank >300)\n`;
     msg += `Cooldown:    ${cooldownBlockedToday} BUY signals blocked (24h re-entry)\n`;
@@ -1274,6 +1288,7 @@ async function computeDailyReport() {
 
     await sendTelegram(msg);
     volumeBlockedToday       = 0; // reset daily counters
+    liquidityBlockedToday    = 0;
     hourlyTrendBlockedToday  = 0;
     rankBlockedToday         = 0;
     cooldownBlockedToday     = 0;
