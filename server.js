@@ -269,6 +269,20 @@ app.get('/api/coins', auth, async (req, res) => {
   }
 });
 
+// ── POST /api/positions/:coinId/close ─────────────────────────────────────────
+// Manually force-close a stuck open position that stop-loss can't reach.
+// Deletes the DB row, clears hasOpenBuy in memory, fires a SELL trigger + Telegram alert.
+//   POST /api/positions/UXLINK/close
+app.post('/api/positions/:coinId/close', auth, async (req, res) => {
+  try {
+    const { coinId } = req.params;
+    const result = await poller.forceClosePosition(coinId);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 async function main() {
   await db.init();

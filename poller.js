@@ -1507,6 +1507,36 @@ async function start() {
   setInterval(poll, POLL_INTERVAL_MS);
 }
 
+// Force-close a stuck position — updates in-memory prevState and DB, fires a SELL trigger.
+// Use via POST /api/positions/:coinId/close when stop-loss can't fire (hasOpenBuy invisible).
+async function forceClosePosition(coinId) {
+  const prev = prevState[coinId];
+  const symbol = prev?.symbol || coinId;
+  const price  = prev?.price  || 0;
+  const alpha  = prev?.alpha  || 0;
+  const buyPrice = prev?.buyPrice || null;
+
+  const pnlStr = (buyPrice && price)
+    ? ` (${(((price - buyPrice) / buyPrice) * 100).toFixed(2)}% from entry $${fmtPrice(buyPrice)})`
+    : '';
+  const reason = `Manual force-close via API${pnlStr}`;
+
+  await db.insertTrigger({ coinId, symbol, type: 'SELL', price, alpha, reason });
+  await db.deleteOpenPosition(coinId);
+
+  if (prev) {
+    prevState[coinId] = { ...prev, hasOpenBuy: false, buyPrice: null, buyOpenedAt: null, peakArmed: false };
+  }
+  sellCooldownUntil[coinId] = Date.now() + SELL_COOLDOWN_MS;
+
+  const msg = `[ FORCE CLOSE ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}\n${reason}`;
+  await sendTelegram(msg);
+  console.log(`  FORCE-CLOSE ${symbol.padEnd(8)} @ $${price}${pnlStr}`);
+
+  return { coinId, symbol, price, alpha, reason };
+}
+
 module.exports.start = start;
 module.exports.getBtcTrend = () => btcTrend;
 module.exports.getMarketSentiment = () => marketSentiment;
+module.exports.forceClosePosition = forceClosePosition;
