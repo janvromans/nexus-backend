@@ -942,7 +942,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
       const btcNote = btcTrend === 'BULL' ? '\nBTC trend: BULLISH' : btcTrend === 'BEAR' ? '\nBTC trend: BEARISH' : '';
       const MIN_HOLD_MS_BUY = getMinHoldMs(id, coin.rank);
       const holdMin = Math.round(MIN_HOLD_MS_BUY / 60000);
-      const msg = `[ BUY SIGNAL ] ${symbol}${modeNote}\nPrice: $${fmtPrice(price)}\nMean-Rev α: ${alpha}  Breakout α: ${breakoutAlpha}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'}${coinBoostNote})\nVolume: ${volRatio}x avg (spike confirmed)\nMin hold: ${holdMin}min\n${reason}${btcNote}${liquidityWarning}\nNow tracking for cycle data.`;
+      const msg = `[ BUY SIGNAL ] ${symbol}${modeNote}\nPrice: €${fmtPrice(price)}\nMean-Rev α: ${alpha}  Breakout α: ${breakoutAlpha}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'}${coinBoostNote})\nVolume: ${volRatio}x avg (spike confirmed)\nMin hold: ${holdMin}min\n${reason}${btcNote}${liquidityWarning}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
       console.log(`  BUY       ${symbol.padEnd(8)} ${mode} mr=${alpha} brk=${breakoutAlpha} thresh=${effectiveBuyThresh} [ATR:${volTier} MC:${coin.rank||'?'}${coinBoostNote}] vol=${volRatio}x hold≥${holdMin}m @ $${price} [BTC:${btcTrend}]`);
       const newState = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, consecutiveAbove, consecutiveBelow: 0, bigMoverAlerted: [] };
@@ -959,7 +959,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
     const wasBreakout = prev.alpha >= BREAKOUT_THRESH;
     const nowBreakout = alpha >= BREAKOUT_THRESH;
     if (isWeak && !wasBreakout && nowBreakout && !hasOpenBuy) {
-      const msg = `⚡ WEAK BREAKOUT - ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha} (spike on historically weak coin)\nHistorical WR: <${WEAK_MAX_WR}% over ${WEAK_MIN_CYCLES}+ cycles\nHigh risk / high reward — monitor closely`;
+      const msg = `⚡ WEAK BREAKOUT - ${symbol}\nPrice: €${fmtPrice(price)}\nAlpha: ${alpha} (spike on historically weak coin)\nHistorical WR: <${WEAK_MAX_WR}% over ${WEAK_MIN_CYCLES}+ cycles\nHigh risk / high reward — monitor closely`;
       await sendTelegram(msg);
       console.log(`  ⚡ BREAKOUT  ${symbol.padEnd(8)} a=${alpha} [WEAK coin spike]`);
     }
@@ -975,7 +975,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
       for (const thresh of BIG_MOVER_THRESHOLDS) {
         if (openPnl >= thresh && !alerted.includes(thresh)) {
           newAlerted.push(thresh);
-          const msg = `🚀 BIG MOVER - ${symbol}\nOpen position: +${openPnl.toFixed(2)}%\nEntry: $${fmtPrice(prev.buyPrice)} → Now: $${fmtPrice(price)}\nAlpha: ${alpha}\nCycle open: ${holdMin}min\nThreshold crossed: +${thresh}%`;
+          const msg = `🚀 BIG MOVER - ${symbol}\nOpen position: +${openPnl.toFixed(2)}%\nEntry: €${fmtPrice(prev.buyPrice)} → Now: €${fmtPrice(price)}\nAlpha: ${alpha}\nCycle open: ${holdMin}min\nThreshold crossed: +${thresh}%`;
           await sendTelegram(msg);
           console.log(`  🚀 BIG MOVER ${symbol.padEnd(8)} +${openPnl.toFixed(1)}% [crossed +${thresh}%]`);
         }
@@ -1012,7 +1012,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
         if (alpha <= peakAlpha - PEAK_DROP_TRIGGER) {
           const reason = `Alpha dropped ${peakAlpha - alpha}pts from peak (${peakAlpha}→${alpha}) after RSI overbought [held ${Math.round(holdMs/60000)}min]`;
           await db.insertTrigger({ coinId: id, symbol, type: 'PEAK_EXIT', price, alpha, reason });
-          const msg = `[ PEAK EXIT ] ${symbol}\nPrice: $${fmtPrice(price)}\nRSI: ${rsiNow?.toFixed(1)}\nAlpha: ${peakAlpha}→${alpha} (dropped ${peakAlpha-alpha}pts from peak)\n${reason}`;
+          const msg = `[ PEAK EXIT ] ${symbol}\nPrice: €${fmtPrice(price)}\nRSI: ${rsiNow?.toFixed(1)}\nAlpha: ${peakAlpha}→${alpha} (dropped ${peakAlpha-alpha}pts from peak)\n${reason}`;
           await sendTelegram(msg);
           console.log(`  PEAK_EXIT ${symbol.padEnd(8)} a=${peakAlpha}→${alpha} RSI=${rsiNow?.toFixed(1)} @ $${price} [held ${Math.round(holdMs/60000)}min]`);
           sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
@@ -1033,9 +1033,9 @@ async function processCoin(coin, storedHistory, candleHistory) {
     if (hasOpenBuy && prev.buyPrice) {
       const openPnl = ((price - prev.buyPrice) / prev.buyPrice) * 100;
       if (openPnl <= STOP_LOSS_PCT) {
-        const reason = `Stop-loss triggered: ${openPnl.toFixed(2)}% loss from entry $${fmtPrice(prev.buyPrice)} [held ${Math.round(holdMs/60000)}min]`;
+        const reason = `Stop-loss triggered: ${openPnl.toFixed(2)}% loss from entry €${fmtPrice(prev.buyPrice)} [held ${Math.round(holdMs/60000)}min]`;
         await db.insertTrigger({ coinId: id, symbol, type: 'SELL', price, alpha, reason });
-        const msg = `[ STOP-LOSS ] ${symbol}\nPrice: $${fmtPrice(price)}\nLoss: ${openPnl.toFixed(2)}% from entry $${fmtPrice(prev.buyPrice)}\nAlpha: ${alpha}\n${reason}`;
+        const msg = `[ STOP-LOSS ] ${symbol}\nPrice: €${fmtPrice(price)}\nLoss: ${openPnl.toFixed(2)}% from entry €${fmtPrice(prev.buyPrice)}\nAlpha: ${alpha}\n${reason}`;
         await sendTelegram(msg);
         console.log(`  STOP-LOSS ${symbol.padEnd(8)} ${openPnl.toFixed(1)}% @ $${price} [held ${Math.round(holdMs/60000)}min]`);
         sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
@@ -1049,7 +1049,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
     if (consecutiveBelow >= 2 && hasOpenBuy && !tooEarly) {
       const reason = `Alpha ${alpha} below SELL threshold for 2 consecutive polls [held ${Math.round(holdMs/60000)}min]`;
       await db.insertTrigger({ coinId: id, symbol, type: 'SELL', price, alpha, reason });
-      const msg = `[ SELL ALERT ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha} - confirmed sell (2 polls)\n${reason}`;
+      const msg = `[ SELL ALERT ] ${symbol}\nPrice: €${fmtPrice(price)}\nAlpha: ${alpha} - confirmed sell (2 polls)\n${reason}`;
       await sendTelegram(msg);
       console.log(`  SELL      ${symbol.padEnd(8)} a=${alpha} @ $${price} [2-poll confirmed]`);
       sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
@@ -1472,6 +1472,32 @@ async function start() {
     console.error('Failed to restore open positions:', e.message);
   }
 
+  // Orphan detection — close any BUY in triggers that has no SELL/PEAK_EXIT
+  // and no corresponding open_positions row (phantom positions from lost restarts)
+  try {
+    const coinStatesForOrphans = await db.getAllCoinStates();
+    const lastKnownPrice = {};
+    for (const s of coinStatesForOrphans) lastKnownPrice[s.coin_id] = s.price;
+
+    const orphans = await db.getOrphanedBuys();
+    if (orphans.length > 0) {
+      console.log(`  Orphan detection: found ${orphans.length} phantom BUY(s) with no open_positions row — closing`);
+      for (const o of orphans) {
+        const coinId = o.coin_id.toLowerCase();
+        const price  = lastKnownPrice[coinId] || o.buy_price;
+        const pnlPct = ((price - o.buy_price) / o.buy_price * 100).toFixed(2);
+        const reason = `Orphan auto-close on startup: BUY had no open_positions row (phantom from restart) [pnl: ${pnlPct}%]`;
+        await db.insertTrigger({ coinId, symbol: o.symbol, type: 'SELL', price, alpha: o.buy_alpha, reason });
+        sellCooldownUntil[coinId] = Date.now() + SELL_COOLDOWN_MS;
+        console.log(`  ORPHAN_CLOSED ${o.symbol.padEnd(8)} buy=$${o.buy_price} close=$${price} pnl=${pnlPct}%`);
+      }
+      const orphanSymbols = orphans.map(o => o.symbol.toUpperCase()).join(', ');
+      await sendTelegram(`🧹 Orphan cleanup on startup: closed ${orphans.length} phantom position(s) with no open_positions row\n${orphanSymbols}\nThese were BUY signals whose exit was never recorded.`);
+    }
+  } catch(e) {
+    console.error('Failed orphan detection:', e.message);
+  }
+
   // Reload coin alpha states from DB — avoids 30min warmup after restarts
   try {
     const coinStates = await db.getAllCoinStates();
@@ -1533,7 +1559,7 @@ async function forceClosePosition(coinId) {
   const buyPrice = prev?.buyPrice || null;
 
   const pnlStr = (buyPrice && price)
-    ? ` (${(((price - buyPrice) / buyPrice) * 100).toFixed(2)}% from entry $${fmtPrice(buyPrice)})`
+    ? ` (${(((price - buyPrice) / buyPrice) * 100).toFixed(2)}% from entry €${fmtPrice(buyPrice)})`
     : '';
   const reason = `Manual force-close via API${pnlStr}`;
 
@@ -1545,7 +1571,7 @@ async function forceClosePosition(coinId) {
   }
   sellCooldownUntil[coinId] = Date.now() + SELL_COOLDOWN_MS;
 
-  const msg = `[ FORCE CLOSE ] ${symbol}\nPrice: $${fmtPrice(price)}\nAlpha: ${alpha}\n${reason}`;
+  const msg = `[ FORCE CLOSE ] ${symbol}\nPrice: €${fmtPrice(price)}\nAlpha: ${alpha}\n${reason}`;
   await sendTelegram(msg);
   console.log(`  FORCE-CLOSE ${symbol.padEnd(8)} @ $${price}${pnlStr}`);
 

@@ -304,13 +304,35 @@ async function getAllOpenPositions() {
   return rows;
 }
 
+// Returns coins that have an open BUY in triggers (no subsequent SELL/PEAK_EXIT)
+// but no corresponding row in open_positions — these are orphaned signals.
+async function getOrphanedBuys() {
+  const { rows } = await pool.query(`
+    SELECT DISTINCT ON (t.coin_id) t.coin_id, t.symbol, t.price AS buy_price, t.alpha AS buy_alpha, t.fired_at
+    FROM triggers t
+    WHERE t.type = 'BUY'
+      AND NOT EXISTS (
+        SELECT 1 FROM triggers t2
+        WHERE t2.coin_id = t.coin_id
+          AND t2.type IN ('SELL', 'PEAK_EXIT')
+          AND t2.fired_at > t.fired_at
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM open_positions op
+        WHERE op.coin_id = t.coin_id
+      )
+    ORDER BY t.coin_id, t.fired_at DESC
+  `);
+  return rows;
+}
+
 module.exports = {
   init, insertTrigger, getTriggers, getAllTriggers, getRecentTriggers,
   insertPricePoint, getPriceHistory, getBulkPriceHistory, purgePriceHistoryBulk,
   upsertCandles, getBulkCandles, purgeOldCandles,
   addTrackedCoin, removeTrackedCoin, getTrackedCoins,
   purgeOldTriggers, purgeTriggersBeforeDate,
-  saveOpenPosition, deleteOpenPosition, getAllOpenPositions,
+  saveOpenPosition, deleteOpenPosition, getAllOpenPositions, getOrphanedBuys,
   saveCoinState, getAllCoinStates,
   insertEarlyWarning, getEarlyWarningsCount, getEarlyWarnings,
 };
