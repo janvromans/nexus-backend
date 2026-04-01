@@ -1168,47 +1168,58 @@ async function computeDailyReport() {
     } catch(e) {
       triggers = await db.getRecentTriggers(11);
     }
-    console.log(`  [DAILY REPORT] ${triggers.length} clean triggers`);
-    const coinStats = {};
-    for (const t of triggers) {
-      if (!coinStats[t.coin_id]) coinStats[t.coin_id] = { symbol: t.symbol, buys: [], exits: [] };
-      if (t.type === 'BUY') coinStats[t.coin_id].buys.push(t);
-      if (t.type === 'SELL' || t.type === 'PEAK_EXIT') coinStats[t.coin_id].exits.push(t);
-    }
+    console.log(`  [DAILY REPORT] ${triggers.length} triggers (${triggers.filter(t => t.filter_version === 1).length} v1)`);
 
-    const rows = [];
-    for (const [coinId, stats] of Object.entries(coinStats)) {
-      const sorted = [...stats.buys.map(t=>({...t,side:'buy'})), ...stats.exits.map(t=>({...t,side:'exit'}))]
-        .sort((a,b) => new Date(a.fired_at) - new Date(b.fired_at));
-      let wins = 0, losses = 0, totalPnl = 0, pendingBuy = null;
-      for (const t of sorted) {
-        if (t.side === 'buy') { pendingBuy = t; }
-        else if (pendingBuy) {
-          const pnl = ((t.price - pendingBuy.price) / pendingBuy.price) * 100;
-          totalPnl += pnl;
-          if (pnl > 0) wins++; else losses++;
-          pendingBuy = null;
-        }
+    // Helper: compute per-coin rows from a trigger set
+    function buildRows(triggerSet) {
+      const coinStats = {};
+      for (const t of triggerSet) {
+        if (!coinStats[t.coin_id]) coinStats[t.coin_id] = { symbol: t.symbol, buys: [], exits: [] };
+        if (t.type === 'BUY') coinStats[t.coin_id].buys.push(t);
+        if (t.type === 'SELL' || t.type === 'PEAK_EXIT') coinStats[t.coin_id].exits.push(t);
       }
-      const cycles = wins + losses;
-      if (cycles === 0) continue;
-      const wr = Math.round((wins / cycles) * 100);
-      const avgPnl = totalPnl / cycles;
-      // Open position
-      const currentPrice = coinCache.data.find(c => c.id === coinId)?.price;
-      const openPnl = pendingBuy && currentPrice
-        ? ((currentPrice - pendingBuy.price) / pendingBuy.price) * 100
-        : null;
-      rows.push({ coinId, symbol: stats.symbol, cycles, wr, avgPnl, totalPnl, openPnl });
+      const rows = [];
+      for (const [coinId, stats] of Object.entries(coinStats)) {
+        const sorted = [...stats.buys.map(t=>({...t,side:'buy'})), ...stats.exits.map(t=>({...t,side:'exit'}))]
+          .sort((a,b) => new Date(a.fired_at) - new Date(b.fired_at));
+        let wins = 0, losses = 0, totalPnl = 0, pendingBuy = null;
+        for (const t of sorted) {
+          if (t.side === 'buy') { pendingBuy = t; }
+          else if (pendingBuy) {
+            const pnl = ((t.price - pendingBuy.price) / pendingBuy.price) * 100;
+            totalPnl += pnl;
+            if (pnl > 0) wins++; else losses++;
+            pendingBuy = null;
+          }
+        }
+        const cycles = wins + losses;
+        if (cycles === 0) continue;
+        const wr = Math.round((wins / cycles) * 100);
+        const avgPnl = totalPnl / cycles;
+        const currentPrice = coinCache.data.find(c => c.id === coinId)?.price;
+        const openPnl = pendingBuy && currentPrice
+          ? ((currentPrice - pendingBuy.price) / pendingBuy.price) * 100
+          : null;
+        rows.push({ coinId, symbol: stats.symbol, cycles, wr, avgPnl, totalPnl, openPnl });
+      }
+      return rows;
     }
 
+    // Overall stats (all data)
+    const rows = buildRows(triggers);
     if (rows.length === 0) return;
 
-    // Overall stats
     const totalCycles = rows.reduce((a, r) => a + r.cycles, 0);
     const totalWins   = rows.reduce((a, r) => a + Math.round(r.cycles * r.wr / 100), 0);
     const overallWr   = Math.round((totalWins / totalCycles) * 100);
     const overallAvg  = rows.reduce((a, r) => a + r.cycles * r.avgPnl, 0) / totalCycles;
+
+    // Clean stats (version 1 only — post-filter signals)
+    const v1Triggers = triggers.filter(t => t.filter_version === 1);
+    const cleanRows  = buildRows(v1Triggers);
+    const cleanCycles = cleanRows.reduce((a, r) => a + r.cycles, 0);
+    const cleanWins   = cleanRows.reduce((a, r) => a + Math.round(r.cycles * r.wr / 100), 0);
+    const cleanWr     = cleanCycles > 0 ? Math.round((cleanWins / cleanCycles) * 100) : null;
 
     // Sort by win rate desc
     rows.sort((a, b) => b.wr - a.wr || b.avgPnl - a.avgPnl);
@@ -1224,17 +1235,17 @@ async function computeDailyReport() {
     const openPos = rows.filter(r => r.openPnl !== null)
       .sort((a,b) => Math.abs(b.openPnl) - Math.abs(a.openPnl)).slice(0, 5);
 
-    // Roadmap progress — totalCycles is already filtered to 14 days = clean cycles
-    const cleanCycles = totalCycles;
+    // Roadmap progress — use v1-only (post-filter) cycles
     const phase2Status = cleanCycles >= 50 ? ' ✅ READY' : cleanCycles >= 45 ? ' ⚡ CLOSE' : '';
 
     // Build message
     const date = new Date().toLocaleDateString('en-GB', { day:'numeric', month:'short', timeZone:'Europe/Amsterdam' });
     let msg = `📊 NEXUS DAILY REPORT — ${date}\n`;
     msg += `${'─'.repeat(28)}\n`;
-    msg += `Win rate:    ${overallWr}%\n`;
+    const cleanWrStr = cleanWr !== null ? `  /  ${cleanWr}% post-filter` : '';
+    msg += `Win rate:    ${overallWr}% overall${cleanWrStr}\n`;
     msg += `Avg return:  ${overallAvg >= 0 ? '+' : ''}${overallAvg.toFixed(2)}%\n`;
-    msg += `Cycles:      ${totalCycles} total\n`;
+    msg += `Cycles:      ${totalCycles} total  /  ${cleanCycles} post-filter\n`;
     msg += `BTC trend:   ${btcTrend}\n`;
     msg += `Market:      ${marketSentiment.bearishPct}% bearish [${marketSentiment.tier}]\n`;
 
@@ -1292,7 +1303,7 @@ async function computeDailyReport() {
     hourlyTrendBlockedToday  = 0;
     rankBlockedToday         = 0;
     cooldownBlockedToday     = 0;
-    console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR)`);
+    console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles overall, ${cleanCycles} v1, ${overallWr}% WR overall, ${cleanWr ?? '-'}% clean WR)`);
   } catch(e) {
     console.error('Daily report error:', e.message);
   }

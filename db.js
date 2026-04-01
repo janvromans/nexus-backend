@@ -89,14 +89,21 @@ async function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_ew_coin ON early_warnings(coin_id);
     CREATE INDEX IF NOT EXISTS idx_ew_time ON early_warnings(fired_at);
+
+    ALTER TABLE triggers ADD COLUMN IF NOT EXISTS filter_version INTEGER NOT NULL DEFAULT 1;
+  `);
+  // Backfill: triggers before Mar 30 2025 are pre-filter (version 0)
+  await pool.query(`
+    UPDATE triggers SET filter_version = 0
+    WHERE fired_at < '2025-03-30T00:00:00Z' AND filter_version = 1
   `);
   console.log('✓ PostgreSQL connected');
 }
 
 async function insertTrigger({ coinId, symbol, type, price, alpha, reason }) {
   await pool.query(
-    'INSERT INTO triggers (coin_id, symbol, type, price, alpha, reason) VALUES ($1,$2,$3,$4,$5,$6)',
-    [coinId, symbol, type, price, alpha, reason]
+    'INSERT INTO triggers (coin_id, symbol, type, price, alpha, reason, filter_version) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+    [coinId, symbol, type, price, alpha, reason, 1]
   );
 }
 

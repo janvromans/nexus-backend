@@ -148,6 +148,7 @@ app.get('/api/alltriggers', auth, async (req, res) => {
       result[row.coin_id].push({
         type: row.type, price: row.price, alpha: row.alpha,
         time: row.fired_at, reason: row.reason, replayed: false,
+        filterVersion: row.filter_version,
       });
     }
     for (const id of Object.keys(result)) result[id].reverse();
