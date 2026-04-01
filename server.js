@@ -269,6 +269,34 @@ app.get('/api/coins', auth, async (req, res) => {
   }
 });
 
+// ── GET /api/positions ────────────────────────────────────────────────────────
+// Lists all open positions from DB with their in-memory hasOpenBuy state.
+// Use to detect stuck positions where DB has a row but memory has hasOpenBuy=false.
+app.get('/api/positions', auth, async (req, res) => {
+  try {
+    const dbPositions = await db.getAllOpenPositions();
+    const coinCache = poller.getCoinCache();
+    const result = dbPositions.map(pos => {
+      const memState = poller.getPrevState(pos.coin_id);
+      const currentPrice = coinCache.data?.find(c => c.id === pos.coin_id)?.price ?? null;
+      const pnlPct = currentPrice ? ((currentPrice - pos.buy_price) / pos.buy_price) * 100 : null;
+      return {
+        coinId: pos.coin_id,
+        symbol: pos.symbol,
+        buyPrice: pos.buy_price,
+        openedAt: pos.opened_at,
+        hasOpenBuyInMemory: memState?.hasOpenBuy ?? false,
+        stuck: !(memState?.hasOpenBuy),
+        currentPrice,
+        pnlPct: pnlPct !== null ? parseFloat(pnlPct.toFixed(2)) : null,
+      };
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── POST /api/positions/:coinId/close ─────────────────────────────────────────
 // Manually force-close a stuck open position that stop-loss can't reach.
 // Deletes the DB row, clears hasOpenBuy in memory, fires a SELL trigger + Telegram alert.

@@ -935,7 +935,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
       const newState = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, consecutiveAbove, consecutiveBelow: 0, bigMoverAlerted: [] };
       prevState[id] = newState;
       // Persist to DB so position survives restarts
-      await db.saveOpenPosition({ coinId: id, symbol, buyPrice: price, buyAlpha: alpha, openedAt: new Date(), peakAlpha: alpha, peakArmed: false, consecutiveAbove });
+      await db.saveOpenPosition({ coinId: id.toLowerCase(), symbol, buyPrice: price, buyAlpha: alpha, openedAt: new Date(), peakAlpha: alpha, peakArmed: false, consecutiveAbove });
       return;
     }
 
@@ -1437,7 +1437,7 @@ async function start() {
   try {
     const openPositions = await db.getAllOpenPositions();
     for (const pos of openPositions) {
-      prevState[pos.coin_id] = {
+      prevState[pos.coin_id.toLowerCase()] = {
         alpha: pos.buy_alpha,
         price: pos.buy_price,
         rsiValue: null,
@@ -1510,6 +1510,7 @@ async function start() {
 // Force-close a stuck position — updates in-memory prevState and DB, fires a SELL trigger.
 // Use via POST /api/positions/:coinId/close when stop-loss can't fire (hasOpenBuy invisible).
 async function forceClosePosition(coinId) {
+  coinId = coinId.toLowerCase();
   const prev = prevState[coinId];
   const symbol = prev?.symbol || coinId;
   const price  = prev?.price  || 0;
@@ -1540,3 +1541,4 @@ module.exports.start = start;
 module.exports.getBtcTrend = () => btcTrend;
 module.exports.getMarketSentiment = () => marketSentiment;
 module.exports.forceClosePosition = forceClosePosition;
+module.exports.getPrevState = (coinId) => prevState[coinId?.toLowerCase()];
