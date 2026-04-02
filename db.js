@@ -92,10 +92,10 @@ async function init() {
 
     ALTER TABLE triggers ADD COLUMN IF NOT EXISTS filter_version INTEGER NOT NULL DEFAULT 1;
   `);
-  // Backfill: triggers before Mar 30 2025 are pre-filter (version 0)
+  // Backfill: triggers before Mar 30 2026 are pre-filter (version 0)
   await pool.query(`
     UPDATE triggers SET filter_version = 0
-    WHERE fired_at < '2025-03-30T00:00:00Z' AND filter_version = 1
+    WHERE fired_at < '2026-03-30T00:00:00Z' AND filter_version = 1
   `);
   console.log('✓ PostgreSQL connected');
 }
