@@ -1459,9 +1459,11 @@ async function start() {
   console.log('NEXUS Poller starting (DB-history mode)...');
   refreshWeakCoinCache();
 
-  // Reload open positions from DB — survives restarts
+  // Reload open positions from DB — survives restarts.
+  // Stored in outer scope so the final enforcement pass can reference it.
+  let openPositions = [];
   try {
-    const openPositions = await db.getAllOpenPositions();
+    openPositions = await db.getAllOpenPositions();
     for (const pos of openPositions) {
       prevState[pos.coin_id.toLowerCase()] = {
         alpha: pos.buy_alpha,
@@ -1488,7 +1490,8 @@ async function start() {
   try {
     const coinStatesForOrphans = await db.getAllCoinStates();
     const lastKnownPrice = {};
-    for (const s of coinStatesForOrphans) lastKnownPrice[s.coin_id] = s.price;
+    // Use lowercase key so lookup matches o.coin_id.toLowerCase() below
+    for (const s of coinStatesForOrphans) lastKnownPrice[s.coin_id.toLowerCase()] = s.price;
 
     const orphans = await db.getOrphanedBuys();
     if (orphans.length > 0) {
@@ -1509,13 +1512,15 @@ async function start() {
     console.error('Failed orphan detection:', e.message);
   }
 
-  // Reload coin alpha states from DB — avoids 30min warmup after restarts
+  // Reload coin alpha states from DB — avoids 30min warmup after restarts.
+  // Use lowercase keys throughout to match how prevState is always keyed.
   try {
     const coinStates = await db.getAllCoinStates();
     let restored = 0;
     for (const state of coinStates) {
-      if (!prevState[state.coin_id]) {
-        prevState[state.coin_id] = {
+      const key = state.coin_id.toLowerCase();
+      if (!prevState[key]) {
+        prevState[key] = {
           alpha: state.alpha,
           price: state.price,
           rsiValue: null,
@@ -1533,6 +1538,28 @@ async function start() {
     }
   } catch(e) {
     console.error('Failed to restore coin states:', e.message);
+  }
+
+  // Final enforcement pass — guarantee every open position has hasOpenBuy: true.
+  // This runs after all restore steps so nothing can silently overwrite it (e.g. a
+  // case-mismatch in coin_state, a failed DB call, or ordering issues on restart).
+  for (const pos of openPositions) {
+    const key = pos.coin_id.toLowerCase();
+    if (!prevState[key] || !prevState[key].hasOpenBuy) {
+      prevState[key] = {
+        ...(prevState[key] || {}),
+        hasOpenBuy: true,
+        buyPrice: pos.buy_price,
+        buyOpenedAt: new Date(pos.opened_at).getTime(),
+        alpha: pos.buy_alpha,
+        price: pos.buy_price,
+        peakAlpha: pos.peak_alpha || pos.buy_alpha,
+        peakArmed: pos.peak_armed || false,
+        consecutiveAbove: pos.consecutive_above || 0,
+        bigMoverAlerted: [],
+      };
+      console.log(`  ENFORCE hasOpenBuy=true for ${pos.symbol} (was missing or false after restore)`);
+    }
   }
 
   // Pre-load candle cache from DB — ensures first poll has 7-day hourly history available
