@@ -992,8 +992,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
     // PEAK EXIT — smarter trailing alpha drop
     // Phase 1: RSI crosses ≥65 → arm the peak tracker
     // Phase 2: while armed, keep updating peak alpha if it rises
-    // Phase 3: fire PEAK EXIT only when alpha drops 10pts from peak
-    const PEAK_DROP_TRIGGER = 10;
+    // Phase 3: fire PEAK EXIT only when alpha drops 7pts from peak
+    const PEAK_DROP_TRIGGER = 7;
 
     if (hasOpenBuy && !tooEarly) {
       if (rsiJustOverbought && !peakArmed) {
