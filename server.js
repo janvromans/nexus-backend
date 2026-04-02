@@ -45,7 +45,7 @@ app.get('/api/triggers', auth, async (req, res) => {
       const rows = await db.getAllTriggers(limit);
       return res.json(rows.map(r => ({
         coinId: r.coin_id, symbol: r.symbol, type: r.type,
-        price: r.price, alpha: r.alpha, reason: r.reason, time: r.fired_at,
+        price: r.price, alpha: r.alpha, reason: r.reason, time: r.fired_at, filter_version: r.filter_version,
       })));
     }
 
