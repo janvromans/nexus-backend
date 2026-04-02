@@ -38,11 +38,12 @@ function auth(req, res, next) {
 app.get('/api/triggers', auth, async (req, res) => {
   try {
     const coins = (req.query.coins || '').split(',').map(s => s.trim()).filter(Boolean);
-    const limit = Math.min(parseInt(req.query.limit) || 200, 1000);
+    const limit  = Math.min(parseInt(req.query.limit) || 200, 1000);
+    const before = req.query.before || null;  // e.g. ?before=2026-03-30
 
     // No coin filter — return flat list sorted newest-first (analytics / cycle review)
     if (!coins.length) {
-      const rows = await db.getAllTriggers(limit);
+      const rows = await db.getAllTriggers(limit, before);
       return res.json(rows.map(r => ({
         coinId: r.coin_id, symbol: r.symbol, type: r.type,
         price: r.price, alpha: r.alpha, reason: r.reason, time: r.fired_at, filter_version: r.filter_version,

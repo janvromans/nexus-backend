@@ -117,7 +117,14 @@ async function getTriggers(coinIds, limit = 500) {
   return rows;
 }
 
-async function getAllTriggers(limit = 2000) {
+async function getAllTriggers(limit = 2000, before = null) {
+  if (before) {
+    const { rows } = await pool.query(
+      `SELECT * FROM triggers WHERE fired_at < $1 ORDER BY fired_at DESC LIMIT $2`,
+      [before, limit]
+    );
+    return rows;
+  }
   const { rows } = await pool.query(
     `SELECT * FROM triggers ORDER BY fired_at DESC LIMIT $1`,
     [limit]
