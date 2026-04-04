@@ -91,6 +91,47 @@ function ewMarkFired(coinId, pattern) {
   ewLastFired[`${coinId}:${pattern}`] = Date.now();
 }
 
+// Check pending hourly-trend blocks and fill in price outcomes at 30/60/120 min
+async function checkHourlyBlockOutcomes(coins) {
+  const pending = await db.getPendingHourlyBlocks();
+  if (!pending.length) return;
+
+  const priceMap = {};
+  for (const c of coins) priceMap[c.id] = c.price;
+
+  const now = Date.now();
+  for (const row of pending) {
+    const currentPrice = priceMap[row.coin_id];
+    if (currentPrice == null) continue;
+
+    const elapsed = now - new Date(row.blocked_at).getTime();
+    const update = {};
+
+    if (elapsed >= 30 * 60 * 1000 && row.price_30m == null) {
+      update.price30m = currentPrice;
+      update.pct30m   = ((currentPrice - row.price_at_block) / row.price_at_block) * 100;
+    }
+    if (elapsed >= 60 * 60 * 1000 && row.price_60m == null) {
+      update.price60m = currentPrice;
+      update.pct60m   = ((currentPrice - row.price_at_block) / row.price_at_block) * 100;
+    }
+    if (elapsed >= 120 * 60 * 1000 && row.price_120m == null) {
+      update.price120m = currentPrice;
+      update.pct120m   = ((currentPrice - row.price_at_block) / row.price_at_block) * 100;
+    }
+
+    if (Object.keys(update).length) {
+      await db.updateHourlyBlockOutcome(row.id, update);
+      const missed = Object.entries(update)
+        .filter(([k, v]) => k.startsWith('pct') && v > 2)
+        .map(([k, v]) => `${k.replace('pct', '')}:+${v.toFixed(1)}%`);
+      if (missed.length) {
+        console.log(`  MISSED OPP (hourly block) ${row.symbol.padEnd(8)} blocked@${row.price_at_block} ${missed.join(' ')}`);
+      }
+    }
+  }
+}
+
 async function checkEarlyWarnings(coins, historyMap) {
   const { tier, bearishPct } = marketSentiment;
   if (tier === 'NORMAL') return; // only WARNING (≥55%) or SEVERE (≥70%)
@@ -905,6 +946,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
       if (hourlyTrend === 'STRONG_BEAR') {
         hourlyTrendBlockedToday++;
         console.log(`  BUY BLOCKED (hourly strong bear >2%) ${symbol.padEnd(8)} mr=${alpha} brk=${breakoutAlpha} [hourly-blocked today: ${hourlyTrendBlockedToday}]`);
+        db.insertHourlyBlock({ coinId: id, symbol, blockReason: 'STRONG_BEAR', alpha, effectiveAlpha, priceAtBlock: price }).catch(() => {});
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove, consecutiveBelow };
         return;
       } else if (hourlyTrend === 'BEAR') {
@@ -913,6 +955,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
         if (alphaForCheck < effectiveBuyThresh) {
           hourlyTrendBlockedToday++;
           console.log(`  BUY BLOCKED (hourly bear penalty) ${symbol.padEnd(8)} mr=${alpha} brk=${breakoutAlpha} ${effectiveAlpha}-5=${alphaForCheck} thresh=${effectiveBuyThresh} [hourly-blocked today: ${hourlyTrendBlockedToday}]`);
+          db.insertHourlyBlock({ coinId: id, symbol, blockReason: 'BEAR_PENALTY', alpha, effectiveAlpha, priceAtBlock: price }).catch(() => {});
           prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove, consecutiveBelow };
           return;
         }
@@ -1144,6 +1187,9 @@ async function poll() {
 
     // Early warning system — pre-breakout detection (Layer 2)
     await checkEarlyWarnings(coins, historyMap);
+
+    // Track price outcomes for hourly-trend-blocked signals
+    await checkHourlyBlockOutcomes(coins);
 
     if (Math.random() < 0.017) await db.purgeOldTriggers();
 

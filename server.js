@@ -173,6 +173,37 @@ app.get('/api/early-warnings', auth, async (req, res) => {
   }
 });
 
+// ── GET /api/hourly-blocks ────────────────────────────────────────────────────
+// Returns hourly-trend-blocked signals with price outcomes at 30/60/120 min.
+// Query params: days (default 7), limit (default 200)
+// Each row includes missed_30m/60m/120m flags (price rose >2% after block).
+app.get('/api/hourly-blocks', auth, async (req, res) => {
+  try {
+    const days  = Math.min(parseInt(req.query.days)  || 7,  30);
+    const limit = Math.min(parseInt(req.query.limit) || 200, 1000);
+    const rows  = await db.getHourlyBlocks(days, limit);
+    const enriched = rows.map(r => ({
+      ...r,
+      missed_30m:  r.pct_30m  != null ? r.pct_30m  > 2 : null,
+      missed_60m:  r.pct_60m  != null ? r.pct_60m  > 2 : null,
+      missed_120m: r.pct_120m != null ? r.pct_120m > 2 : null,
+    }));
+    const withOutcomes = enriched.filter(r => r.pct_30m != null);
+    const missedCount  = withOutcomes.filter(r => r.missed_30m || r.missed_60m || r.missed_120m).length;
+    res.json({
+      blocks: enriched,
+      total: enriched.length,
+      with_outcomes: withOutcomes.length,
+      missed_opportunities: missedCount,
+      missed_pct: withOutcomes.length ? ((missedCount / withOutcomes.length) * 100).toFixed(1) : null,
+      days,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/alphas ───────────────────────────────────────────────────────────
 // Returns all coins sorted by current alpha score (from coin_state table)
 app.get('/api/alphas', auth, async (req, res) => {

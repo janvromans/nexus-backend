@@ -91,6 +91,25 @@ async function init() {
     CREATE INDEX IF NOT EXISTS idx_ew_time ON early_warnings(fired_at);
 
     ALTER TABLE triggers ADD COLUMN IF NOT EXISTS filter_version INTEGER NOT NULL DEFAULT 1;
+
+    CREATE TABLE IF NOT EXISTS hourly_trend_blocks (
+      id              SERIAL PRIMARY KEY,
+      coin_id         TEXT NOT NULL,
+      symbol          TEXT NOT NULL,
+      block_reason    TEXT NOT NULL,
+      alpha           INTEGER NOT NULL,
+      effective_alpha INTEGER NOT NULL,
+      price_at_block  REAL NOT NULL,
+      blocked_at      TIMESTAMPTZ DEFAULT NOW(),
+      price_30m       REAL,
+      price_60m       REAL,
+      price_120m      REAL,
+      pct_30m         REAL,
+      pct_60m         REAL,
+      pct_120m        REAL
+    );
+    CREATE INDEX IF NOT EXISTS idx_htb_coin ON hourly_trend_blocks(coin_id);
+    CREATE INDEX IF NOT EXISTS idx_htb_time ON hourly_trend_blocks(blocked_at);
   `);
   // Backfill: triggers before Mar 30 2026 are pre-filter (version 0)
   await pool.query(`
@@ -340,6 +359,52 @@ async function getOrphanedBuys() {
   return rows;
 }
 
+// ── Hourly Trend Block Outcome Tracking ──────────────────────────────────────
+async function insertHourlyBlock({ coinId, symbol, blockReason, alpha, effectiveAlpha, priceAtBlock }) {
+  await pool.query(
+    `INSERT INTO hourly_trend_blocks (coin_id, symbol, block_reason, alpha, effective_alpha, price_at_block)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [coinId, symbol, blockReason, alpha, effectiveAlpha, priceAtBlock]
+  );
+}
+
+// Returns blocks from the last 3 hours that still need price outcomes filled in
+async function getPendingHourlyBlocks() {
+  const { rows } = await pool.query(
+    `SELECT id, coin_id, symbol, price_at_block, blocked_at, price_30m, price_60m, price_120m
+     FROM hourly_trend_blocks
+     WHERE blocked_at > NOW() - INTERVAL '3 hours'
+       AND (price_30m IS NULL OR price_60m IS NULL OR price_120m IS NULL)`
+  );
+  return rows;
+}
+
+async function updateHourlyBlockOutcome(id, { price30m, price60m, price120m, pct30m, pct60m, pct120m }) {
+  const sets = [];
+  const params = [];
+  let p = 1;
+  if (price30m  != null) { sets.push(`price_30m=$${p++}, pct_30m=$${p++}`);   params.push(price30m,  pct30m);  }
+  if (price60m  != null) { sets.push(`price_60m=$${p++}, pct_60m=$${p++}`);   params.push(price60m,  pct60m);  }
+  if (price120m != null) { sets.push(`price_120m=$${p++}, pct_120m=$${p++}`); params.push(price120m, pct120m); }
+  if (!sets.length) return;
+  params.push(id);
+  await pool.query(
+    `UPDATE hourly_trend_blocks SET ${sets.join(', ')} WHERE id=$${p}`,
+    params
+  );
+}
+
+async function getHourlyBlocks(days = 7, limit = 500) {
+  const { rows } = await pool.query(
+    `SELECT * FROM hourly_trend_blocks
+     WHERE blocked_at > NOW() - INTERVAL '${days} days'
+     ORDER BY blocked_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return rows;
+}
+
 module.exports = {
   init, insertTrigger, getTriggers, getAllTriggers, getRecentTriggers,
   insertPricePoint, getPriceHistory, getBulkPriceHistory, purgePriceHistoryBulk,
@@ -349,4 +414,5 @@ module.exports = {
   saveOpenPosition, deleteOpenPosition, getAllOpenPositions, getOrphanedBuys,
   saveCoinState, getAllCoinStates,
   insertEarlyWarning, getEarlyWarningsCount, getEarlyWarnings,
+  insertHourlyBlock, getPendingHourlyBlocks, updateHourlyBlockOutcome, getHourlyBlocks,
 };
