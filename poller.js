@@ -893,8 +893,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
     const CONFIRM_NEEDED = 3;
     const confirmed = consecutiveAbove >= CONFIRM_NEEDED;
 
-    if (!wasAboveBuy && nowAboveBuy && !confirmed) {
-      // Building confirmation — log progress but don't fire yet
+    if (!wasAboveBuy && nowAboveBuy && !confirmed && !hasOpenBuy) {
+      // Building confirmation — log progress but don't fire yet (skip if position already open)
       console.log(`  CONFIRMING ${symbol.padEnd(8)} mr=${alpha} brk=${breakoutAlpha} [${consecutiveAbove}/${CONFIRM_NEEDED} polls]`);
       prevState[id] = { ...prevState[id]||{}, alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove };
       return;
