@@ -1045,17 +1045,28 @@ async function processCoin(coin, storedHistory, candleHistory) {
     }
 
     // PEAK EXIT — smarter trailing alpha drop
-    // Phase 1: RSI crosses ≥65 → arm the peak tracker
+    // Arming conditions (any one triggers):
+    //   1. RSI crosses ≥65 (overbought)
+    //   2. Position is up >1% from entry price
+    //   3. Position has been held >60 minutes
     // Phase 2: while armed, keep updating peak alpha if it rises
     // Phase 3: fire PEAK EXIT only when alpha drops 7pts from peak
     const PEAK_DROP_TRIGGER = 7;
+    const PEAK_ARM_PROFIT_PCT = 1.0;   // arm when up >1% from entry
+    const PEAK_ARM_HOLD_MS   = 60 * 60 * 1000; // arm after 60 min hold
 
     if (hasOpenBuy && !tooEarly) {
-      if (rsiJustOverbought && !peakArmed) {
-        // Arm the tracker — RSI just entered overbought zone
-        peakArmed = true;
-        peakAlpha = alpha;
-        console.log(`  PEAK_ARMED ${symbol.padEnd(8)} a=${alpha} RSI=${rsiNow.toFixed(1)} — watching for drop`);
+      if (!peakArmed) {
+        const profitPct = prev.buyPrice ? ((price - prev.buyPrice) / prev.buyPrice) * 100 : 0;
+        const armByRsi    = rsiJustOverbought;
+        const armByProfit = profitPct >= PEAK_ARM_PROFIT_PCT;
+        const armByTime   = holdMs >= PEAK_ARM_HOLD_MS;
+        if (armByRsi || armByProfit || armByTime) {
+          peakArmed = true;
+          peakAlpha = alpha;
+          const armReason = armByRsi ? `RSI=${rsiNow?.toFixed(1)}` : armByProfit ? `profit=${profitPct.toFixed(2)}%` : `held=${Math.round(holdMs/60000)}min`;
+          console.log(`  PEAK_ARMED ${symbol.padEnd(8)} a=${alpha} [${armReason}] — watching for drop`);
+        }
       }
       if (peakArmed) {
         // Keep updating peak if alpha is still rising
@@ -1065,7 +1076,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
         }
         // Fire exit when alpha drops enough from peak
         if (alpha <= peakAlpha - PEAK_DROP_TRIGGER) {
-          const reason = `Alpha dropped ${peakAlpha - alpha}pts from peak (${peakAlpha}→${alpha}) after RSI overbought [held ${Math.round(holdMs/60000)}min]`;
+          const reason = `Alpha dropped ${peakAlpha - alpha}pts from peak (${peakAlpha}→${alpha}) [held ${Math.round(holdMs/60000)}min]`;
           await db.insertTrigger({ coinId: id, symbol, type: 'PEAK_EXIT', price, alpha, reason });
           const msg = `[ PEAK EXIT ] ${symbol}\nPrice: €${fmtPrice(price)}\nRSI: ${rsiNow?.toFixed(1)}\nAlpha: ${peakAlpha}→${alpha} (dropped ${peakAlpha-alpha}pts from peak)\n${reason}`;
           await sendTelegram(msg);
