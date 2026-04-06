@@ -996,6 +996,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
       prevState[id] = newState;
       // Persist to DB so position survives restarts
       await db.saveOpenPosition({ coinId: id.toLowerCase(), symbol, buyPrice: price, buyAlpha: alpha, openedAt: new Date(), peakAlpha: alpha, peakArmed: false, consecutiveAbove, peakPrice: price });
+      db.insertPaperTrade({ coinId: id, symbol, entryPrice: price, entryTime: new Date() }).catch(() => {});
       return;
     }
 
@@ -1071,6 +1072,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
           console.log(`  PEAK_EXIT ${symbol.padEnd(8)} a=${peakAlpha}→${alpha} RSI=${rsiNow?.toFixed(1)} @ $${price} [held ${Math.round(holdMs/60000)}min]`);
           sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
           prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveBelow: 0 };
+          db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'PEAK_EXIT' }).catch(() => {});
           await db.deleteOpenPosition(id);
           return;
         }
@@ -1095,6 +1097,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
         console.log(`  TRAILING_STOP ${symbol.padEnd(8)} ${drawdownPct.toFixed(1)}% from peak $${peakPrice} @ $${price} [held ${Math.round(holdMs/60000)}min]`);
         sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha, peakPrice: null, consecutiveBelow: 0 };
+        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'TRAILING_STOP' }).catch(() => {});
         await db.deleteOpenPosition(id);
         return;
       }
@@ -1113,6 +1116,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
         console.log(`  STOP-LOSS ${symbol.padEnd(8)} ${openPnl.toFixed(1)}% @ $${price} [held ${Math.round(holdMs/60000)}min]`);
         sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha, consecutiveBelow: 0 };
+        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'STOP_LOSS' }).catch(() => {});
         await db.deleteOpenPosition(id);
         return;
       }
@@ -1127,6 +1131,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
       console.log(`  SELL      ${symbol.padEnd(8)} a=${alpha} @ $${price} [2-poll confirmed]`);
       sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
       prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha, consecutiveBelow: 0 };
+      db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch(() => {});
       await db.deleteOpenPosition(id);
       return;
     }
@@ -1373,6 +1378,26 @@ async function computeDailyReport() {
 
     msg += `\n🗺️ ROADMAP\n`;
     msg += `Phase 2: ${cleanCycles} clean cycles (need 50)${phase2Status}`;
+
+    // Paper trading summary
+    try {
+      const paperTrades = await db.getPaperTrades();
+      const closedPaper = paperTrades.filter(t => t.status === 'closed');
+      const openPaper   = paperTrades.filter(t => t.status === 'open');
+      const totalPnlEur = closedPaper.reduce((s, t) => s + (t.pnl_eur || 0), 0);
+      const portfolioVal = 500 + totalPnlEur;
+      const todayClosed = closedPaper.filter(t => new Date(t.exit_time) > new Date(Date.now() - 86400000));
+      const todayPnl    = todayClosed.reduce((s, t) => s + (t.pnl_eur || 0), 0);
+      const wins        = closedPaper.filter(t => t.pnl_eur > 0).length;
+      const paperWr     = closedPaper.length ? Math.round((wins / closedPaper.length) * 100) : 0;
+      msg += `\n\n💰 PAPER TRADING\n`;
+      msg += `Portfolio: €${portfolioVal.toFixed(2)} (started €500)\n`;
+      msg += `Today: ${todayPnl >= 0 ? '+' : ''}€${todayPnl.toFixed(2)}\n`;
+      msg += `Win rate: ${paperWr}% (${closedPaper.length} closed)\n`;
+      msg += `Open positions: ${openPaper.length}`;
+    } catch(e) {
+      console.error('Paper trading summary error:', e.message);
+    }
 
     await sendTelegram(msg);
     volumeBlockedToday       = 0; // reset daily counters
@@ -1680,6 +1705,7 @@ async function forceClosePosition(coinId) {
   const reason = `Manual force-close via API${pnlStr}`;
 
   await db.insertTrigger({ coinId, symbol, type: 'SELL', price, alpha, reason });
+  db.closePaperTrade({ coinId, exitPrice: price, exitTime: new Date(), exitReason: 'FORCE_CLOSE' }).catch(() => {});
   await db.deleteOpenPosition(coinId);
 
   if (prev) {

@@ -80,6 +80,22 @@ async function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_candles_coin ON candles(coin_id);
 
+    CREATE TABLE IF NOT EXISTS paper_trades (
+      id                SERIAL PRIMARY KEY,
+      coin_id           TEXT NOT NULL,
+      symbol            TEXT NOT NULL,
+      entry_price       REAL NOT NULL,
+      exit_price        REAL,
+      entry_time        TIMESTAMPTZ DEFAULT NOW(),
+      exit_time         TIMESTAMPTZ,
+      position_size_eur REAL NOT NULL DEFAULT 50,
+      pnl_eur           REAL,
+      pnl_pct           REAL,
+      exit_reason       TEXT,
+      status            TEXT NOT NULL DEFAULT 'open'
+    );
+    CREATE INDEX IF NOT EXISTS idx_paper_coin ON paper_trades(coin_id);
+
     CREATE TABLE IF NOT EXISTS early_warnings (
       id        SERIAL PRIMARY KEY,
       coin_id   TEXT NOT NULL,
@@ -407,6 +423,54 @@ async function getHourlyBlocks(days = 7, limit = 500) {
   return rows;
 }
 
+// ── Paper Trades ──────────────────────────────────────────────────────────────
+const PAPER_POSITION_SIZE = 50;
+
+async function insertPaperTrade({ coinId, symbol, entryPrice, entryTime }) {
+  await pool.query(
+    `INSERT INTO paper_trades (coin_id, symbol, entry_price, entry_time, position_size_eur, status)
+     VALUES ($1, $2, $3, $4, $5, 'open')`,
+    [coinId, symbol, entryPrice, entryTime || new Date(), PAPER_POSITION_SIZE]
+  );
+}
+
+async function closePaperTrade({ coinId, exitPrice, exitTime, exitReason }) {
+  const { rows } = await pool.query(
+    `SELECT id, entry_price FROM paper_trades
+     WHERE coin_id = $1 AND status = 'open'
+     ORDER BY entry_time DESC LIMIT 1`,
+    [coinId]
+  );
+  if (!rows.length) return;
+  const { id, entry_price } = rows[0];
+  const pnlPct = ((exitPrice - entry_price) / entry_price) * 100;
+  const pnlEur = (pnlPct / 100) * PAPER_POSITION_SIZE;
+  await pool.query(
+    `UPDATE paper_trades SET
+       exit_price=$1, exit_time=$2, pnl_eur=$3, pnl_pct=$4, exit_reason=$5, status='closed'
+     WHERE id=$6`,
+    [exitPrice, exitTime || new Date(), pnlEur, pnlPct, exitReason, id]
+  );
+}
+
+async function getPaperTrades() {
+  const { rows } = await pool.query(
+    `SELECT * FROM paper_trades ORDER BY entry_time DESC`
+  );
+  return rows;
+}
+
+async function getPaperTradeSummaryToday() {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(pnl_eur), 0) AS today_pnl,
+            COUNT(*) FILTER (WHERE status='closed') AS closed_today,
+            COUNT(*) FILTER (WHERE pnl_eur > 0) AS wins_today
+     FROM paper_trades
+     WHERE entry_time >= NOW() - INTERVAL '24 hours'`
+  );
+  return rows[0];
+}
+
 module.exports = {
   init, insertTrigger, getTriggers, getAllTriggers, getRecentTriggers,
   insertPricePoint, getPriceHistory, getBulkPriceHistory, purgePriceHistoryBulk,
@@ -417,4 +481,5 @@ module.exports = {
   saveCoinState, getAllCoinStates,
   insertEarlyWarning, getEarlyWarningsCount, getEarlyWarnings,
   insertHourlyBlock, getPendingHourlyBlocks, updateHourlyBlockOutcome, getHourlyBlocks,
+  insertPaperTrade, closePaperTrade, getPaperTrades, getPaperTradeSummaryToday,
 };

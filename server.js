@@ -344,6 +344,31 @@ app.post('/api/positions/:coinId/close', auth, async (req, res) => {
   }
 });
 
+// ── GET /api/paper-trades ─────────────────────────────────────────────────────
+// Returns all paper trades (open + closed) with portfolio summary.
+// Starting balance: €500 (10 positions of €50 each).
+app.get('/api/paper-trades', auth, async (req, res) => {
+  try {
+    const trades  = await db.getPaperTrades();
+    const closed  = trades.filter(t => t.status === 'closed');
+    const open    = trades.filter(t => t.status === 'open');
+    const totalPnlEur = closed.reduce((s, t) => s + (t.pnl_eur || 0), 0);
+    const wins    = closed.filter(t => t.pnl_eur > 0).length;
+    res.json({
+      trades,
+      summary: {
+        total_trades:    closed.length,
+        open_trades:     open.length,
+        win_rate:        closed.length ? parseFloat(((wins / closed.length) * 100).toFixed(1)) : null,
+        total_pnl_eur:   parseFloat(totalPnlEur.toFixed(2)),
+        portfolio_value: parseFloat((500 + totalPnlEur).toFixed(2)),
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 async function main() {
   await db.init();
