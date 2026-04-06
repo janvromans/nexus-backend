@@ -53,8 +53,10 @@ async function init() {
       opened_at     TIMESTAMPTZ DEFAULT NOW(),
       peak_alpha    INTEGER,
       peak_armed    BOOLEAN DEFAULT FALSE,
-      consecutive_above INTEGER DEFAULT 0
+      consecutive_above INTEGER DEFAULT 0,
+      peak_price    REAL
     );
+    ALTER TABLE open_positions ADD COLUMN IF NOT EXISTS peak_price REAL;
 
     CREATE TABLE IF NOT EXISTS coin_state (
       coin_id           TEXT PRIMARY KEY,
@@ -318,13 +320,13 @@ async function getAllCoinStates() {
 }
 
 // ── Open Positions ────────────────────────────────────────────────────────────
-async function saveOpenPosition({ coinId, symbol, buyPrice, buyAlpha, openedAt, peakAlpha, peakArmed, consecutiveAbove }) {
+async function saveOpenPosition({ coinId, symbol, buyPrice, buyAlpha, openedAt, peakAlpha, peakArmed, consecutiveAbove, peakPrice }) {
   await pool.query(
-    `INSERT INTO open_positions (coin_id, symbol, buy_price, buy_alpha, opened_at, peak_alpha, peak_armed, consecutive_above)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+    `INSERT INTO open_positions (coin_id, symbol, buy_price, buy_alpha, opened_at, peak_alpha, peak_armed, consecutive_above, peak_price)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT (coin_id) DO UPDATE SET
-       buy_price=$3, buy_alpha=$4, opened_at=$5, peak_alpha=$6, peak_armed=$7, consecutive_above=$8`,
-    [coinId, symbol, buyPrice, buyAlpha, openedAt || new Date(), peakAlpha || buyAlpha, peakArmed || false, consecutiveAbove || 0]
+       buy_price=$3, buy_alpha=$4, opened_at=$5, peak_alpha=$6, peak_armed=$7, consecutive_above=$8, peak_price=$9`,
+    [coinId, symbol, buyPrice, buyAlpha, openedAt || new Date(), peakAlpha || buyAlpha, peakArmed || false, consecutiveAbove || 0, peakPrice || buyPrice]
   );
 }
 

@@ -861,12 +861,16 @@ async function processCoin(coin, storedHistory, candleHistory) {
   const prev = prevState[id];
 
   // Declare shared variables outside if(prev) so they're always in scope
-  const nowAboveBuy  = alpha >= effectiveBuyThresh || breakoutAlpha >= effectiveBuyThresh;
+  // BREAKOUT BUY disabled — 0% win rate across all recorded cycles.
+  // Breakout detection is kept for early-warning alerts only (weak coin spike alerts).
+  const BREAKOUT_BUY_THRESH = 999;
+  const nowAboveBuy  = alpha >= effectiveBuyThresh || breakoutAlpha >= BREAKOUT_BUY_THRESH;
   const nowBelowSell = alpha <= cfg.alphaSellThresh;
   let peakArmed = prev?.peakArmed || false;
   let peakAlpha = prev?.peakAlpha || alpha;
+  let peakPrice = prev?.peakPrice || prev?.buyPrice || price;
   const prevConsecutive = prev?.consecutiveAbove || 0;
-  const withinTolerance = prevConsecutive >= 1 && (alpha >= effectiveBuyThresh - 3 || breakoutAlpha >= effectiveBuyThresh - 3);
+  const withinTolerance = prevConsecutive >= 1 && alpha >= effectiveBuyThresh - 3;
   let consecutiveAbove = (nowAboveBuy || withinTolerance) ? (prevConsecutive + 1) : 0;
 
   // SELL confirmation tracking — 2 consecutive polls below alphaSellThresh required
@@ -877,7 +881,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
   await db.saveCoinState(id, symbol, alpha, price, consecutiveAbove);
 
   if (prev) {
-    const wasAboveBuy  = prev.alpha >= effectiveBuyThresh || (prev.breakoutAlpha || 0) >= effectiveBuyThresh;
+    const wasAboveBuy  = prev.alpha >= effectiveBuyThresh || (prev.breakoutAlpha || 0) >= BREAKOUT_BUY_THRESH;
     const wasBelowSell = prev.alpha <= cfg.alphaSellThresh;
     const rsiPrev      = prev.rsiValue || null;
     const rsiOverbought = rsiNow !== null && rsiNow >= 65;
@@ -988,10 +992,10 @@ async function processCoin(coin, storedHistory, candleHistory) {
       const msg = `[ BUY SIGNAL ] ${symbol}${modeNote}\nPrice: €${fmtPrice(price)}\nMean-Rev α: ${alpha}  Breakout α: ${breakoutAlpha}\nThreshold: ${effectiveBuyThresh} (ATR:${volTier} Rank:${coin.rank||'?'}${coinBoostNote})\nVolume: ${volRatio}x avg (spike confirmed)\nMin hold: ${holdMin}min\n${reason}${btcNote}${liquidityWarning}\nNow tracking for cycle data.`;
       await sendTelegram(msg);
       console.log(`  BUY       ${symbol.padEnd(8)} ${mode} mr=${alpha} brk=${breakoutAlpha} thresh=${effectiveBuyThresh} [ATR:${volTier} MC:${coin.rank||'?'}${coinBoostNote}] vol=${volRatio}x hold≥${holdMin}m @ $${price} [BTC:${btcTrend}]`);
-      const newState = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, consecutiveAbove, consecutiveBelow: 0, bigMoverAlerted: [] };
+      const newState = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: true, buyOpenedAt: Date.now(), buyPrice: price, peakAlpha: alpha, peakArmed: false, peakPrice: price, consecutiveAbove, consecutiveBelow: 0, bigMoverAlerted: [] };
       prevState[id] = newState;
       // Persist to DB so position survives restarts
-      await db.saveOpenPosition({ coinId: id.toLowerCase(), symbol, buyPrice: price, buyAlpha: alpha, openedAt: new Date(), peakAlpha: alpha, peakArmed: false, consecutiveAbove });
+      await db.saveOpenPosition({ coinId: id.toLowerCase(), symbol, buyPrice: price, buyAlpha: alpha, openedAt: new Date(), peakAlpha: alpha, peakArmed: false, consecutiveAbove, peakPrice: price });
       return;
     }
 
@@ -1032,6 +1036,13 @@ async function processCoin(coin, storedHistory, candleHistory) {
     const holdMs = prev.buyOpenedAt ? Date.now() - prev.buyOpenedAt : Infinity;
     const tooEarly = hasOpenBuy && holdMs < MIN_HOLD_MS;
 
+    // Update peakPrice — track highest price reached during position
+    if (hasOpenBuy && price > peakPrice) {
+      peakPrice = price;
+      // Persist to DB so peakPrice survives restarts
+      db.saveOpenPosition({ coinId: id.toLowerCase(), symbol, buyPrice: prev.buyPrice, buyAlpha: prev.alpha, openedAt: new Date(prev.buyOpenedAt), peakAlpha, peakArmed, consecutiveAbove, peakPrice }).catch(() => {});
+    }
+
     // PEAK EXIT — smarter trailing alpha drop
     // Phase 1: RSI crosses ≥65 → arm the peak tracker
     // Phase 2: while armed, keep updating peak alpha if it rises
@@ -1068,6 +1079,25 @@ async function processCoin(coin, storedHistory, candleHistory) {
 
     if (tooEarly && (rsiJustOverbought || nowBelowSell) && hasOpenBuy) {
       console.log(`  HOLD_LOCK ${symbol.padEnd(8)} a=${alpha} [${Math.round(holdMs/60000)}/${MIN_HOLD_MS/60000}min]`);
+    }
+
+    // TRAILING DRAWDOWN STOP — exit if price drops -3% from peakPrice (not entry)
+    // Fires regardless of tooEarly — prevents CTSI-style long bleeders
+    // peakPrice starts at buyPrice and ratchets up as price rises
+    const TRAILING_STOP_PCT = -3;
+    if (hasOpenBuy) {
+      const drawdownPct = ((price - peakPrice) / peakPrice) * 100;
+      if (drawdownPct <= TRAILING_STOP_PCT) {
+        const reason = `Trailing stop: price dropped ${drawdownPct.toFixed(2)}% from peak €${fmtPrice(peakPrice)} [held ${Math.round(holdMs/60000)}min]`;
+        await db.insertTrigger({ coinId: id, symbol, type: 'SELL', price, alpha, reason });
+        const msg = `[ TRAILING STOP ] ${symbol}\nPrice: €${fmtPrice(price)}\nPeak: €${fmtPrice(peakPrice)}\nDrawdown: ${drawdownPct.toFixed(2)}%\n${reason}`;
+        await sendTelegram(msg);
+        console.log(`  TRAILING_STOP ${symbol.padEnd(8)} ${drawdownPct.toFixed(1)}% from peak $${peakPrice} @ $${price} [held ${Math.round(holdMs/60000)}min]`);
+        sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
+        prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha, peakPrice: null, consecutiveBelow: 0 };
+        await db.deleteOpenPosition(id);
+        return;
+      }
     }
 
     // HARD STOP-LOSS — exit if open position drops -15% from entry
@@ -1110,6 +1140,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
     buyPrice: keepOpen ? (prev?.buyPrice || price) : null,
     peakArmed: keepOpen ? peakArmed : false,
     peakAlpha: keepOpen ? peakAlpha : alpha,
+    peakPrice: keepOpen ? peakPrice : null,
     consecutiveAbove,
     consecutiveBelow,
     bigMoverAlerted: keepOpen ? (prev?.bigMoverAlerted || []) : [],
@@ -1520,6 +1551,7 @@ async function start() {
         buyPrice: pos.buy_price,
         peakAlpha: pos.peak_alpha || pos.buy_alpha,
         peakArmed: pos.peak_armed || false,
+        peakPrice: pos.peak_price || pos.buy_price,
         consecutiveAbove: pos.consecutive_above || 0,
         bigMoverAlerted: [],
       };
