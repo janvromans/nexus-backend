@@ -23,6 +23,10 @@ let rankBlockedToday         = 0;
 let cooldownBlockedToday     = 0;
 let liquidityBlockedToday    = 0;
 
+// Weekly accumulators — reset in weekly report (Monday 09:00 CET)
+let rankBlockedWeekly     = 0;
+let cooldownBlockedWeekly = 0;
+
 // ── Relative Strength Detection ──────────────────────────────────────────────
 // Coins up >3% in 24h while market is >60% bearish — move independently of market
 // Requires 3 consecutive rising polls to filter out brief spikes
@@ -910,6 +914,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
       if (sellCooldownUntil[id] && Date.now() < sellCooldownUntil[id]) {
         const minsLeft = Math.round((sellCooldownUntil[id] - Date.now()) / 60000);
         cooldownBlockedToday++;
+        cooldownBlockedWeekly++;
         console.log(`  BUY BLOCKED (24h cooldown) ${symbol.padEnd(8)} [${minsLeft}min remaining]`);
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove, consecutiveBelow };
         return;
@@ -930,6 +935,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
       const MC_RANK_FLOOR = 300;
       if (coin.rank && coin.rank > MC_RANK_FLOOR) {
         rankBlockedToday++;
+        rankBlockedWeekly++;
         console.log(`  BUY BLOCKED (rank ${coin.rank} > ${MC_RANK_FLOOR}) ${symbol.padEnd(8)}`);
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove, consecutiveBelow };
         return;
@@ -1248,6 +1254,46 @@ async function poll() {
   }
 }
 
+// ── Shared cycle-stats helper ─────────────────────────────────────────────────
+// Pairs BUY→SELL/PEAK_EXIT triggers and computes per-coin rows.
+// Returns { rows, allPnls } where allPnls is the flat array of individual trade
+// P&L values (used for profit-factor calculation in weekly report).
+function buildCycleRows(triggerSet) {
+  const coinStats = {};
+  for (const t of triggerSet) {
+    if (!coinStats[t.coin_id]) coinStats[t.coin_id] = { symbol: t.symbol, buys: [], exits: [] };
+    if (t.type === 'BUY') coinStats[t.coin_id].buys.push(t);
+    if (t.type === 'SELL' || t.type === 'PEAK_EXIT') coinStats[t.coin_id].exits.push(t);
+  }
+  const rows = [];
+  const allPnls = [];
+  for (const [coinId, stats] of Object.entries(coinStats)) {
+    const sorted = [...stats.buys.map(t=>({...t,side:'buy'})), ...stats.exits.map(t=>({...t,side:'exit'}))]
+      .sort((a,b) => new Date(a.fired_at) - new Date(b.fired_at));
+    let wins = 0, losses = 0, totalPnl = 0, pendingBuy = null;
+    for (const t of sorted) {
+      if (t.side === 'buy') { pendingBuy = t; }
+      else if (pendingBuy) {
+        const pnl = ((t.price - pendingBuy.price) / pendingBuy.price) * 100;
+        totalPnl += pnl;
+        allPnls.push(pnl);
+        if (pnl > 0) wins++; else losses++;
+        pendingBuy = null;
+      }
+    }
+    const cycles = wins + losses;
+    if (cycles === 0) continue;
+    const wr = Math.round((wins / cycles) * 100);
+    const avgPnl = totalPnl / cycles;
+    const currentPrice = coinCache.data?.find(c => c.id === coinId)?.price;
+    const openPnl = pendingBuy && currentPrice
+      ? ((currentPrice - pendingBuy.price) / pendingBuy.price) * 100
+      : null;
+    rows.push({ coinId, symbol: stats.symbol, cycles, wins, losses, wr, avgPnl, totalPnl, openPnl });
+  }
+  return { rows, allPnls };
+}
+
 // ── Daily Report ─────────────────────────────────────────────────────────────
 // Runs at 20:00 CET every day, sends summary to Telegram
 
@@ -1263,43 +1309,8 @@ async function computeDailyReport() {
     }
     console.log(`  [DAILY REPORT] ${triggers.length} triggers (${triggers.filter(t => t.filter_version === 1).length} v1)`);
 
-    // Helper: compute per-coin rows from a trigger set
-    function buildRows(triggerSet) {
-      const coinStats = {};
-      for (const t of triggerSet) {
-        if (!coinStats[t.coin_id]) coinStats[t.coin_id] = { symbol: t.symbol, buys: [], exits: [] };
-        if (t.type === 'BUY') coinStats[t.coin_id].buys.push(t);
-        if (t.type === 'SELL' || t.type === 'PEAK_EXIT') coinStats[t.coin_id].exits.push(t);
-      }
-      const rows = [];
-      for (const [coinId, stats] of Object.entries(coinStats)) {
-        const sorted = [...stats.buys.map(t=>({...t,side:'buy'})), ...stats.exits.map(t=>({...t,side:'exit'}))]
-          .sort((a,b) => new Date(a.fired_at) - new Date(b.fired_at));
-        let wins = 0, losses = 0, totalPnl = 0, pendingBuy = null;
-        for (const t of sorted) {
-          if (t.side === 'buy') { pendingBuy = t; }
-          else if (pendingBuy) {
-            const pnl = ((t.price - pendingBuy.price) / pendingBuy.price) * 100;
-            totalPnl += pnl;
-            if (pnl > 0) wins++; else losses++;
-            pendingBuy = null;
-          }
-        }
-        const cycles = wins + losses;
-        if (cycles === 0) continue;
-        const wr = Math.round((wins / cycles) * 100);
-        const avgPnl = totalPnl / cycles;
-        const currentPrice = coinCache.data.find(c => c.id === coinId)?.price;
-        const openPnl = pendingBuy && currentPrice
-          ? ((currentPrice - pendingBuy.price) / pendingBuy.price) * 100
-          : null;
-        rows.push({ coinId, symbol: stats.symbol, cycles, wr, avgPnl, totalPnl, openPnl });
-      }
-      return rows;
-    }
-
     // Overall stats (all data)
-    const rows = buildRows(triggers);
+    const { rows } = buildCycleRows(triggers);
     if (rows.length === 0) return;
 
     const totalCycles = rows.reduce((a, r) => a + r.cycles, 0);
@@ -1309,7 +1320,7 @@ async function computeDailyReport() {
 
     // Clean stats (version 1 only — post-filter signals)
     const v1Triggers = triggers.filter(t => t.filter_version === 1);
-    const cleanRows  = buildRows(v1Triggers);
+    const { rows: cleanRows } = buildCycleRows(v1Triggers);
     const cleanCycles = cleanRows.reduce((a, r) => a + r.cycles, 0);
     const cleanWins   = cleanRows.reduce((a, r) => a + Math.round(r.cycles * r.wr / 100), 0);
     const cleanWr     = cleanCycles > 0 ? Math.round((cleanWins / cleanCycles) * 100) : null;
@@ -1442,6 +1453,137 @@ function scheduleDailyReport() {
     setTimeout(async () => {
       await computeDailyReport();
       scheduleNext(); // reschedule for next day
+    }, ms);
+  }
+
+  scheduleNext();
+}
+
+// ── Weekly Report (Monday 09:00 CET) ─────────────────────────────────────────
+async function computeWeeklyReport() {
+  try {
+    const triggers = await db.getRecentTriggers(7);
+    console.log(`  [WEEKLY REPORT] ${triggers.length} triggers in last 7 days`);
+
+    const { rows, allPnls } = buildCycleRows(triggers);
+    if (rows.length === 0) {
+      await sendTelegram('🗓️ NEXUS WEEKLY REPORT — no completed cycles this week');
+      return;
+    }
+
+    const totalCycles = rows.reduce((a, r) => a + r.cycles, 0);
+    const totalWins   = rows.reduce((a, r) => a + r.wins, 0);
+    const overallWr   = Math.round((totalWins / totalCycles) * 100);
+    const overallAvg  = rows.reduce((a, r) => a + r.cycles * r.avgPnl, 0) / totalCycles;
+
+    // Profit factor
+    const grossProfit = allPnls.filter(p => p > 0).reduce((s, p) => s + p, 0);
+    const grossLoss   = Math.abs(allPnls.filter(p => p <= 0).reduce((s, p) => s + p, 0));
+    const profitFactor = grossLoss > 0 ? (grossProfit / grossLoss).toFixed(2) : (grossProfit > 0 ? '∞' : '0.00');
+
+    // Clean stats (v1 only)
+    const v1Triggers  = triggers.filter(t => t.filter_version === 1);
+    const { rows: cleanRows } = buildCycleRows(v1Triggers);
+    const cleanCycles = cleanRows.reduce((a, r) => a + r.cycles, 0);
+    const cleanWins   = cleanRows.reduce((a, r) => a + r.wins, 0);
+    const cleanWr     = cleanCycles > 0 ? Math.round((cleanWins / cleanCycles) * 100) : null;
+
+    // Top 3 / bottom 3 by WR with ≥3 cycles
+    const qualified = rows.filter(r => r.cycles >= 3);
+    const top3    = [...qualified].sort((a, b) => b.wr - a.wr || b.avgPnl - a.avgPnl).slice(0, 3);
+    const bottom3 = [...qualified].sort((a, b) => a.wr - b.wr || a.avgPnl - b.avgPnl).slice(0, 3);
+
+    // Best sector (current snapshot from last poll)
+    const sectorRanked = Object.entries(sectorStrengthCache).sort((a, b) => b[1] - a[1]);
+    const bestSector = sectorRanked.length > 0
+      ? `${sectorRanked[0][0]} (${sectorRanked[0][1] >= 0 ? '+' : ''}${sectorRanked[0][1].toFixed(1)}%)`
+      : 'n/a';
+
+    // Paper trading
+    const paperTrades = await db.getPaperTrades();
+    const closedPaper = paperTrades.filter(t => t.status === 'closed');
+    const totalPnlEur = closedPaper.reduce((s, t) => s + (t.pnl_eur || 0), 0);
+    const portfolioVal = 500 + totalPnlEur;
+    const weekAgo     = new Date(Date.now() - 7 * 86400000);
+    const weekClosed  = closedPaper.filter(t => new Date(t.exit_time) > weekAgo);
+    const weekPnl     = weekClosed.reduce((s, t) => s + (t.pnl_eur || 0), 0);
+    const paperWins   = closedPaper.filter(t => t.pnl_eur > 0).length;
+    const paperWr     = closedPaper.length ? Math.round((paperWins / closedPaper.length) * 100) : 0;
+
+    // Auto-recommendation
+    const recommendation = paperWr < 40
+      ? 'Consider pausing live trading'
+      : paperWr <= 50
+        ? 'Continue paper trading'
+        : 'Consider starting live trading';
+
+    const date = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Europe/Amsterdam' });
+
+    let msg = `🗓️ NEXUS WEEKLY REPORT — ${date}\n`;
+    msg += `${'─'.repeat(28)}\n`;
+    msg += `📊 Performance (last 7 days)\n`;
+    const cleanWrStr = cleanWr !== null ? ` / ${cleanWr}% post-filter` : '';
+    msg += `Win rate: ${overallWr}% overall${cleanWrStr}\n`;
+    msg += `Avg return: ${overallAvg >= 0 ? '+' : ''}${overallAvg.toFixed(2)}%\n`;
+    msg += `Cycles: ${totalCycles} completed\n`;
+    msg += `Profit factor: ${profitFactor}\n`;
+
+    msg += `\n💰 Paper Trading\n`;
+    msg += `Portfolio: €${portfolioVal.toFixed(2)} (started €500)\n`;
+    msg += `Week P&L: ${weekPnl >= 0 ? '+' : ''}€${weekPnl.toFixed(2)}\n`;
+    msg += `Win rate: ${paperWr}%\n`;
+
+    if (top3.length > 0) {
+      msg += `\n🏆 Top coins:\n`;
+      for (const r of top3) {
+        msg += `${r.symbol.padEnd(8)} ${r.wr}% WR  ${r.cycles} cycles\n`;
+      }
+    }
+
+    if (bottom3.length > 0) {
+      msg += `\n⚠️ Weak coins:\n`;
+      for (const r of bottom3) {
+        msg += `${r.symbol.padEnd(8)} ${r.wr}% WR  ${r.cycles} cycles\n`;
+      }
+    }
+
+    msg += `\n📊 Best sector: ${bestSector}\n`;
+    msg += `🔍 Filter effectiveness: MC rank blocked ${rankBlockedWeekly}, cooldown blocked ${cooldownBlockedWeekly}\n`;
+
+    msg += `\n🤖 Auto-recommendation:\n${recommendation}`;
+
+    await sendTelegram(msg);
+    rankBlockedWeekly     = 0; // reset weekly counters
+    cooldownBlockedWeekly = 0;
+    console.log(`  [WEEKLY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR, paper ${paperWr}% WR)`);
+  } catch(e) {
+    console.error('Weekly report error:', e.message);
+  }
+}
+
+function scheduleWeeklyReport() {
+  // Run every Monday at 09:00 CET (08:00 UTC)
+  const TARGET_DOW      = 1; // Monday
+  const TARGET_HOUR_UTC = 8;
+  const TARGET_MIN_UTC  = 0;
+
+  function msUntilNext() {
+    const now       = new Date();
+    const candidate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), TARGET_HOUR_UTC, TARGET_MIN_UTC, 0));
+    const daysUntilMonday = (TARGET_DOW - candidate.getUTCDay() + 7) % 7;
+    candidate.setUTCDate(candidate.getUTCDate() + daysUntilMonday);
+    if (candidate <= now) candidate.setUTCDate(candidate.getUTCDate() + 7);
+    return candidate - now;
+  }
+
+  function scheduleNext() {
+    const ms  = msUntilNext();
+    const hrs = Math.floor(ms / 3600000);
+    const min = Math.floor((ms % 3600000) / 60000);
+    console.log(`  Weekly report scheduled in ${hrs}h ${min}m (Monday 09:00 CET)`);
+    setTimeout(async () => {
+      await computeWeeklyReport();
+      scheduleNext();
     }, ms);
   }
 
@@ -1695,6 +1837,7 @@ async function start() {
     : `Thresholds: not enough cycles yet (<${WEAK_MIN_CYCLES} per coin)`;
   await sendTelegram(`NEXUS Terminal restarted\nBitvavo API · polling every 90s\n${threshLine}`);
   scheduleDailyReport();
+  scheduleWeeklyReport();
   scheduleMorningReport();
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);

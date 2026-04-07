@@ -344,6 +344,57 @@ app.post('/api/positions/:coinId/close', auth, async (req, res) => {
   }
 });
 
+// ── GET /api/performance ──────────────────────────────────────────────────────
+// Per-coin cycle stats computed from the full trigger history.
+// Matches the daily report's cycle counts — use this for the accuracy tracker
+// instead of /api/backtest (which only covers the 24h price_history window).
+app.get('/api/performance', auth, async (req, res) => {
+  try {
+    const triggers = await db.getAllTriggers(3000);
+    const coinStats = {};
+    for (const t of triggers) {
+      if (!coinStats[t.coin_id]) coinStats[t.coin_id] = { symbol: t.symbol, buys: [], exits: [] };
+      if (t.type === 'BUY') coinStats[t.coin_id].buys.push(t);
+      if (t.type === 'SELL' || t.type === 'PEAK_EXIT') coinStats[t.coin_id].exits.push(t);
+    }
+    const coins = [];
+    for (const [coinId, stats] of Object.entries(coinStats)) {
+      const sorted = [
+        ...stats.buys.map(t  => ({ ...t, side: 'buy' })),
+        ...stats.exits.map(t => ({ ...t, side: 'exit' })),
+      ].sort((a, b) => new Date(a.fired_at) - new Date(b.fired_at));
+      let wins = 0, losses = 0, totalPnl = 0, pendingBuy = null;
+      for (const t of sorted) {
+        if (t.side === 'buy') { pendingBuy = t; }
+        else if (pendingBuy) {
+          const pnl = ((t.price - pendingBuy.price) / pendingBuy.price) * 100;
+          totalPnl += pnl;
+          if (pnl > 0) wins++; else losses++;
+          pendingBuy = null;
+        }
+      }
+      const cycles = wins + losses;
+      if (cycles === 0) continue;
+      const wr     = Math.round((wins / cycles) * 100);
+      const avgPnl = +(totalPnl / cycles).toFixed(3);
+      coins.push({
+        coinId, symbol: stats.symbol,
+        cycles, wins, losses, wr,
+        avgPnl, totalPnl: +totalPnl.toFixed(2),
+        hasOpenPosition: pendingBuy !== null,
+      });
+    }
+    coins.sort((a, b) => b.cycles - a.cycles || b.wr - a.wr);
+    const totalCycles = coins.reduce((s, c) => s + c.cycles, 0);
+    const totalWins   = coins.reduce((s, c) => s + c.wins, 0);
+    const overallWr   = totalCycles > 0 ? Math.round((totalWins / totalCycles) * 100) : 0;
+    res.json({ coins, totalCycles, overallWr, updatedAt: new Date().toISOString() });
+  } catch (e) {
+    console.error('/api/performance error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/paper-trades ─────────────────────────────────────────────────────
 // Returns all paper trades (open + closed) with portfolio summary.
 // Starting balance: €500 (10 positions of €50 each).
