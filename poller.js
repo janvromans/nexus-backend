@@ -285,7 +285,11 @@ const WEAK_MIN_CYCLES  = 5;   // minimum cycles before a coin is flagged weak
 const KNOWN_WEAK_COINS = new Set([
   'night-token','rain','world-liberty-financial','aerodrome-finance',
   'jupiter','filecoin','tether-gold','arbitrum','pump-fun','non-playable-coin',
-  'gwei', // rank unknown (>300) — alpha spikes quickly fade
+  'gwei',                   // rank unknown (>300) — alpha spikes quickly fade
+  'bitcoin',                // blacklisted pending BTC-specific parameter research — system not optimized for BTC mean-reversion, better used as market indicator
+  'mon',                    // 14% WR over 7 cycles, consistent loser across all market conditions
+  'polygon-ecosystem-token', // 0% WR over 6 cycles, never won a single trade
+  'hedera-hashgraph',       // 17% WR over 6 cycles, consistent loser
 ]);
 let weakCoinCache = KNOWN_WEAK_COINS;
 let weakCacheUpdatedAt = Date.now();
