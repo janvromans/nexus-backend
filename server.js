@@ -397,22 +397,28 @@ app.get('/api/performance', auth, async (req, res) => {
 
 // ── GET /api/paper-trades ─────────────────────────────────────────────────────
 // Returns all paper trades (open + closed) with portfolio summary.
-// Starting balance: €500 (10 positions of €50 each).
+// Starting balance: €1,000 (8 positions of €125 each, 0.50% round-trip fee).
 app.get('/api/paper-trades', auth, async (req, res) => {
   try {
-    const trades  = await db.getPaperTrades();
-    const closed  = trades.filter(t => t.status === 'closed');
-    const open    = trades.filter(t => t.status === 'open');
-    const totalPnlEur = closed.reduce((s, t) => s + (t.pnl_eur || 0), 0);
-    const wins    = closed.filter(t => t.pnl_eur > 0).length;
+    const trades     = await db.getPaperTrades();
+    const closed     = trades.filter(t => t.status === 'closed');
+    const open       = trades.filter(t => t.status === 'open');
+    const wins       = closed.filter(t => t.pnl_eur > 0).length;
+    // gross = what pnl would be without fees; net = pnl_eur (already fee-deducted)
+    const FEE_PER_TRADE = 125 * 0.005;
+    const netPnlEur   = closed.reduce((s, t) => s + (t.pnl_eur || 0), 0);
+    const totalFees   = closed.length * FEE_PER_TRADE;
+    const grossPnlEur = netPnlEur + totalFees;
     res.json({
       trades,
       summary: {
         total_trades:    closed.length,
         open_trades:     open.length,
         win_rate:        closed.length ? parseFloat(((wins / closed.length) * 100).toFixed(1)) : null,
-        total_pnl_eur:   parseFloat(totalPnlEur.toFixed(2)),
-        portfolio_value: parseFloat((500 + totalPnlEur).toFixed(2)),
+        gross_pnl_eur:   parseFloat(grossPnlEur.toFixed(2)),
+        total_fees_eur:  parseFloat(totalFees.toFixed(2)),
+        net_pnl_eur:     parseFloat(netPnlEur.toFixed(2)),
+        portfolio_value: parseFloat((1000 + netPnlEur).toFixed(2)),
       },
     });
   } catch (e) {

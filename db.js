@@ -424,9 +424,16 @@ async function getHourlyBlocks(days = 7, limit = 500) {
 }
 
 // ── Paper Trades ──────────────────────────────────────────────────────────────
-const PAPER_POSITION_SIZE = 50;
+const PAPER_POSITION_SIZE = 125;
+const PAPER_FEE_PCT       = 0.005; // 0.50% round-trip
 
 async function insertPaperTrade({ coinId, symbol, entryPrice, entryTime }) {
+  // Skip if 8 or more positions already open (max 8 simultaneous positions)
+  const { rows: countRows } = await pool.query(
+    `SELECT COUNT(*) AS cnt FROM paper_trades WHERE status = 'open'`
+  );
+  if (parseInt(countRows[0].cnt, 10) >= 8) return;
+
   await pool.query(
     `INSERT INTO paper_trades (coin_id, symbol, entry_price, entry_time, position_size_eur, status)
      VALUES ($1, $2, $3, $4, $5, 'open')`,
@@ -443,8 +450,10 @@ async function closePaperTrade({ coinId, exitPrice, exitTime, exitReason }) {
   );
   if (!rows.length) return;
   const { id, entry_price } = rows[0];
-  const pnlPct = ((exitPrice - entry_price) / entry_price) * 100;
-  const pnlEur = (pnlPct / 100) * PAPER_POSITION_SIZE;
+  const pnlPct    = ((exitPrice - entry_price) / entry_price) * 100;
+  const grossPnl  = (pnlPct / 100) * PAPER_POSITION_SIZE;
+  const feeEur    = PAPER_POSITION_SIZE * PAPER_FEE_PCT;
+  const pnlEur    = grossPnl - feeEur;
   await pool.query(
     `UPDATE paper_trades SET
        exit_price=$1, exit_time=$2, pnl_eur=$3, pnl_pct=$4, exit_reason=$5, status='closed'
