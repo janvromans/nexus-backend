@@ -1469,6 +1469,9 @@ async function computeWeeklyReport() {
     const triggers = await db.getRecentTriggers(7);
     console.log(`  [WEEKLY REPORT] ${triggers.length} triggers in last 7 days`);
 
+    // All-time triggers for Elite Tier tracking
+    const allTimeTriggers = await db.getAllTriggers(5000);
+
     const { rows, allPnls } = buildCycleRows(triggers);
     if (rows.length === 0) {
       await sendTelegram('🗓️ NEXUS WEEKLY REPORT — no completed cycles this week');
@@ -1553,6 +1556,32 @@ async function computeWeeklyReport() {
 
     msg += `\n📊 Best sector: ${bestSector}\n`;
     msg += `🔍 Filter effectiveness: MC rank blocked ${rankBlockedWeekly}, cooldown blocked ${cooldownBlockedWeekly}\n`;
+
+    // Elite Tier tracking — all-time cycle stats per coin
+    const { rows: allTimeRows } = buildCycleRows(allTimeTriggers);
+    const eliteConfirmed  = allTimeRows.filter(r => r.cycles >= 20 && r.wr >= 75)
+      .sort((a, b) => b.wr - a.wr || b.cycles - a.cycles);
+    const eliteCandidates = allTimeRows.filter(r => r.cycles >= 10 && r.cycles < 20 && r.wr >= 75)
+      .sort((a, b) => b.cycles - a.cycles || b.wr - a.wr);
+
+    msg += `\n🏆 ELITE TIER TRACKING\n`;
+    if (eliteCandidates.length > 0) {
+      msg += `Candidates approaching 20 cycles (75%+ WR):\n`;
+      for (const r of eliteCandidates) {
+        const needed = 20 - r.cycles;
+        msg += `- ${r.symbol}: ${r.cycles} cycles, ${r.wr}% WR (needs ${needed} more)\n`;
+      }
+    } else {
+      msg += `Candidates approaching 20 cycles (75%+ WR):\n- None yet\n`;
+    }
+    if (eliteConfirmed.length > 0) {
+      msg += `Confirmed Elite (20+ cycles, 75%+ WR):\n`;
+      for (const r of eliteConfirmed) {
+        msg += `- ${r.symbol}: ${r.cycles} cycles, ${r.wr}% WR\n`;
+      }
+    } else {
+      msg += `Confirmed Elite (20+ cycles, 75%+ WR):\n- None yet\n`;
+    }
 
     msg += `\n🤖 Auto-recommendation:\n${recommendation}`;
 
