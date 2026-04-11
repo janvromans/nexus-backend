@@ -916,6 +916,12 @@ async function processCoin(coin, storedHistory, candleHistory) {
 
     if (nowAboveBuy && confirmed && !prev.hasOpenBuy && consecutiveAbove >= CONFIRM_NEEDED) {
       // ── Pre-flight filters ────────────────────────────────────────────────
+      // 0. Blacklist — never open a position on known weak coins
+      if (weakCoinCache.has(id)) {
+        console.log(`  BUY BLOCKED (blacklisted) ${symbol.padEnd(8)}`);
+        prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveAbove, consecutiveBelow };
+        return;
+      }
       // 1. 24h re-entry cooldown — block re-entry after SELL/PEAK_EXIT
       if (sellCooldownUntil[id] && Date.now() < sellCooldownUntil[id]) {
         const minsLeft = Math.round((sellCooldownUntil[id] - Date.now()) / 60000);
