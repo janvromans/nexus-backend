@@ -428,15 +428,12 @@ const PAPER_POSITION_SIZE = 125;
 const PAPER_FEE_PCT       = 0.005; // 0.50% round-trip
 
 async function insertPaperTrade({ coinId, symbol, entryPrice, entryTime }) {
-  // Skip if 8 or more positions already open (max 8 simultaneous positions)
-  const { rows: countRows } = await pool.query(
-    `SELECT COUNT(*) AS cnt FROM paper_trades WHERE status = 'open'`
-  );
-  if (parseInt(countRows[0].cnt, 10) >= 8) return;
-
+  // Atomic insert: subquery check runs inside the same statement, preventing
+  // TOCTOU race where two simultaneous BUY signals both pass a separate count check.
   await pool.query(
     `INSERT INTO paper_trades (coin_id, symbol, entry_price, entry_time, position_size_eur, status)
-     VALUES ($1, $2, $3, $4, $5, 'open')`,
+     SELECT $1, $2, $3, $4, $5, 'open'
+     WHERE (SELECT COUNT(*) FROM paper_trades WHERE status = 'open') < 8`,
     [coinId, symbol, entryPrice, entryTime || new Date(), PAPER_POSITION_SIZE]
   );
 }
