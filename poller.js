@@ -579,6 +579,7 @@ async function fetchCurrentPrices() {
 }
 
 function fmtPrice(price) {
+  if (price == null || isNaN(price)) return 'N/A';
   if (price < 0.0001) return price.toFixed(8);
   if (price < 0.01)   return price.toFixed(6);
   if (price < 1)      return price.toFixed(4);
@@ -1160,7 +1161,14 @@ async function processCoin(coin, storedHistory, candleHistory) {
       console.log(`  SELL      ${symbol.padEnd(8)} a=${alpha} @ $${price} [2-poll confirmed]`);
       sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
       prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha, consecutiveBelow: 0 };
-      db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch(() => {});
+      // Paper trade: only close on SELL if PnL > 0.6% (covers round-trip fee).
+      // Real signal fires unconditionally — this only affects paper trade accounting.
+      const paperPnlPct = prev.buyPrice ? ((price - prev.buyPrice) / prev.buyPrice) * 100 : null;
+      if (paperPnlPct === null || paperPnlPct > 0.6) {
+        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch(() => {});
+      } else {
+        console.log(`  PAPER HOLD ${symbol.padEnd(8)} pnl=${paperPnlPct.toFixed(2)}% ≤ 0.6% — skipping paper close, holding`);
+      }
       await db.deleteOpenPosition(id);
       return;
     }
