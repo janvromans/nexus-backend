@@ -290,6 +290,8 @@ const KNOWN_WEAK_COINS = new Set([
   'mon',                    // 14% WR over 7 cycles, consistent loser across all market conditions
   'polygon-ecosystem-token', // 0% WR over 6 cycles, never won a single trade
   'hedera-hashgraph',       // 17% WR over 6 cycles, consistent loser
+  'blur',                   // 0% WR, consistent loser
+  'numeraire',              // 20% WR over 5+ cycles, confirmed weak
 ]);
 let weakCoinCache = KNOWN_WEAK_COINS;
 let weakCacheUpdatedAt = Date.now();
