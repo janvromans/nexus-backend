@@ -405,9 +405,8 @@ app.get('/api/paper-trades', auth, async (req, res) => {
     const open       = trades.filter(t => t.status === 'open');
     const wins       = closed.filter(t => t.pnl_eur > 0).length;
     // gross = what pnl would be without fees; net = pnl_eur (already fee-deducted)
-    const FEE_PER_TRADE = 125 * 0.005;
     const netPnlEur   = closed.reduce((s, t) => s + (t.pnl_eur || 0), 0);
-    const totalFees   = closed.length * FEE_PER_TRADE;
+    const totalFees   = closed.reduce((s, t) => s + (t.position_size_eur || 0) * 0.005, 0);
     const grossPnlEur = netPnlEur + totalFees;
     res.json({
       trades,

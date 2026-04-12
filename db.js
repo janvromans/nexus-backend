@@ -440,16 +440,16 @@ async function insertPaperTrade({ coinId, symbol, entryPrice, entryTime }) {
 
 async function closePaperTrade({ coinId, exitPrice, exitTime, exitReason }) {
   const { rows } = await pool.query(
-    `SELECT id, entry_price FROM paper_trades
+    `SELECT id, entry_price, position_size_eur FROM paper_trades
      WHERE coin_id = $1 AND status = 'open'
      ORDER BY entry_time DESC LIMIT 1`,
     [coinId]
   );
   if (!rows.length) return;
-  const { id, entry_price } = rows[0];
+  const { id, entry_price, position_size_eur } = rows[0];
   const pnlPct    = ((exitPrice - entry_price) / entry_price) * 100;
-  const grossPnl  = (pnlPct / 100) * PAPER_POSITION_SIZE;
-  const feeEur    = PAPER_POSITION_SIZE * PAPER_FEE_PCT;
+  const grossPnl  = (pnlPct / 100) * position_size_eur;
+  const feeEur    = position_size_eur * PAPER_FEE_PCT;
   const pnlEur    = grossPnl - feeEur;
   await pool.query(
     `UPDATE paper_trades SET
