@@ -1427,13 +1427,13 @@ async function computeDailyReport() {
       const closedPaper = paperTrades.filter(t => t.status === 'closed');
       const openPaper   = paperTrades.filter(t => t.status === 'open');
       const totalPnlEur = closedPaper.reduce((s, t) => s + (t.pnl_eur || 0), 0);
-      const portfolioVal = 500 + totalPnlEur;
+      const portfolioVal = 1000 + totalPnlEur;
       const todayClosed = closedPaper.filter(t => new Date(t.exit_time) > new Date(Date.now() - 86400000));
       const todayPnl    = todayClosed.reduce((s, t) => s + (t.pnl_eur || 0), 0);
       const wins        = closedPaper.filter(t => t.pnl_eur > 0).length;
       const paperWr     = closedPaper.length ? Math.round((wins / closedPaper.length) * 100) : 0;
       msg += `\n\n💰 PAPER TRADING\n`;
-      msg += `Portfolio: €${portfolioVal.toFixed(2)} (started €500)\n`;
+      msg += `Portfolio: €${portfolioVal.toFixed(2)} (started €1,000)\n`;
       msg += `Today: ${todayPnl >= 0 ? '+' : ''}€${todayPnl.toFixed(2)}\n`;
       msg += `Win rate: ${paperWr}% (${closedPaper.length} closed)\n`;
       msg += `Open positions: ${openPaper.length}`;
@@ -1526,7 +1526,7 @@ async function computeWeeklyReport() {
     const paperTrades = await db.getPaperTrades();
     const closedPaper = paperTrades.filter(t => t.status === 'closed');
     const totalPnlEur = closedPaper.reduce((s, t) => s + (t.pnl_eur || 0), 0);
-    const portfolioVal = 500 + totalPnlEur;
+    const portfolioVal = 1000 + totalPnlEur;
     const weekAgo     = new Date(Date.now() - 7 * 86400000);
     const weekClosed  = closedPaper.filter(t => new Date(t.exit_time) > weekAgo);
     const weekPnl     = weekClosed.reduce((s, t) => s + (t.pnl_eur || 0), 0);
@@ -1552,7 +1552,7 @@ async function computeWeeklyReport() {
     msg += `Profit factor: ${profitFactor}\n`;
 
     msg += `\n💰 Paper Trading\n`;
-    msg += `Portfolio: €${portfolioVal.toFixed(2)} (started €500)\n`;
+    msg += `Portfolio: €${portfolioVal.toFixed(2)} (started €1,000)\n`;
     msg += `Week P&L: ${weekPnl >= 0 ? '+' : ''}€${weekPnl.toFixed(2)}\n`;
     msg += `Win rate: ${paperWr}%\n`;
 
