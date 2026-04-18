@@ -292,6 +292,16 @@ const KNOWN_WEAK_COINS = new Set([
   'hedera-hashgraph',       // 17% WR over 6 cycles, consistent loser
   'blur',                   // 0% WR, consistent loser
   'numeraire',              // 20% WR over 5+ cycles, confirmed weak
+  'grass',                  // 14% WR over 7 cycles, consistent loser
+  'd',                      // 17% WR over 6 cycles, consistent loser
+  'ont',                    // 17% WR over 6 cycles, consistent loser
+  'morpho',                 // 17% WR over 6 cycles, consistent loser
+  'hook',                   // 20% WR over 5 cycles, consistent loser
+  'eden',                   // 20% WR over 5 cycles, consistent loser
+  'huma',                   // 0% WR over 4 cycles
+  'ldo',                    // 0% WR over 5 cycles
+  'fida',                   // 0% WR over 5 cycles
+  'imx',                    // 0% WR over 4 cycles
 ]);
 let weakCoinCache = KNOWN_WEAK_COINS;
 let weakCacheUpdatedAt = Date.now();
