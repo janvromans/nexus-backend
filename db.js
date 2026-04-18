@@ -109,6 +109,7 @@ async function init() {
     CREATE INDEX IF NOT EXISTS idx_ew_time ON early_warnings(fired_at);
 
     ALTER TABLE triggers ADD COLUMN IF NOT EXISTS filter_version INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'standard';
 
     CREATE TABLE IF NOT EXISTS hourly_trend_blocks (
       id              SERIAL PRIMARY KEY,
@@ -424,17 +425,24 @@ async function getHourlyBlocks(days = 7, limit = 500) {
 }
 
 // ── Paper Trades ──────────────────────────────────────────────────────────────
-const PAPER_POSITION_SIZE = 125;
-const PAPER_FEE_PCT       = 0.005; // 0.50% round-trip
+// Maker fee simulation: 0.15% per side = 0.30% round-trip (limit order rate)
+const PAPER_FEE_PCT = 0.003;
 
-async function insertPaperTrade({ coinId, symbol, entryPrice, entryTime }) {
-  // Atomic insert: subquery check runs inside the same statement, preventing
-  // TOCTOU race where two simultaneous BUY signals both pass a separate count check.
+// Per-tier position size and max simultaneous open paper trades
+const PAPER_TIER_CONFIG = {
+  elite:     { positionSize: 200, maxPositions: 3 },
+  standard:  { positionSize: 125, maxPositions: 5 },
+  probation: { positionSize:  75, maxPositions: 2 },
+};
+
+async function insertPaperTrade({ coinId, symbol, entryPrice, entryTime, tier = 'standard' }) {
+  const { positionSize, maxPositions } = PAPER_TIER_CONFIG[tier] || PAPER_TIER_CONFIG.standard;
+  // Atomic INSERT…SELECT: per-tier count check prevents TOCTOU race
   await pool.query(
-    `INSERT INTO paper_trades (coin_id, symbol, entry_price, entry_time, position_size_eur, status)
-     SELECT $1, $2, $3, $4, $5, 'open'
-     WHERE (SELECT COUNT(*) FROM paper_trades WHERE status = 'open') < 8`,
-    [coinId, symbol, entryPrice, entryTime || new Date(), PAPER_POSITION_SIZE]
+    `INSERT INTO paper_trades (coin_id, symbol, entry_price, entry_time, position_size_eur, tier, status)
+     SELECT $1, $2, $3, $4, $5, $6, 'open'
+     WHERE (SELECT COUNT(*) FROM paper_trades WHERE status = 'open' AND tier = $6) < $7`,
+    [coinId, symbol, entryPrice, entryTime || new Date(), positionSize, tier, maxPositions]
   );
 }
 

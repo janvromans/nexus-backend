@@ -22,10 +22,19 @@ let hourlyTrendBlockedToday  = 0;
 let rankBlockedToday         = 0;
 let cooldownBlockedToday     = 0;
 let liquidityBlockedToday    = 0;
+let timeFilterBlockedToday   = 0;
 
 // Weekly accumulators — reset in weekly report (Monday 09:00 CET)
-let rankBlockedWeekly     = 0;
-let cooldownBlockedWeekly = 0;
+let rankBlockedWeekly        = 0;
+let cooldownBlockedWeekly    = 0;
+let timeFilterBlockedWeekly  = 0;
+
+// ── Paper Limit Order Tracking ────────────────────────────────────────────────
+// Pending paper limit orders: coinId → { limitPrice, symbol, tier, pollsRemaining }
+// Set when a real BUY signal fires; filled when price drops to limit within 3 polls.
+const pendingLimitOrders = {};
+let limitOrdersCreated = 0; // cumulative since last weekly reset
+let limitOrdersFilled  = 0; // cumulative since last weekly reset
 
 // ── Relative Strength Detection ──────────────────────────────────────────────
 // Coins up >3% in 24h while market is >60% bearish — move independently of market
@@ -307,10 +316,99 @@ let weakCoinCache = KNOWN_WEAK_COINS;
 let weakCacheUpdatedAt = Date.now();
 
 function refreshWeakCoinCache() {
-  // Phase 2: replace with dynamic DB-based detection once 50+ clean cycles accumulated
+  // Phase 2: dynamic tier system now handles blacklist — this initialises static entries on startup
   weakCoinCache = KNOWN_WEAK_COINS;
   weakCacheUpdatedAt = Date.now();
   console.log(`  Weak coin cache: ${weakCoinCache.size} coins flagged`);
+}
+
+// ── Dynamic Coin Tier Cache ───────────────────────────────────────────────────
+// Refreshed every 10 minutes from triggers table.
+// ELITE:          ≥20 cycles AND ≥75% WR → BUY threshold α≥60
+// STANDARD:       5-19 cycles AND 50-74% WR → BUY threshold α≥65
+// PROBATION:      <5 cycles (or doesn't fit above) → BUY threshold α≥70
+// AUTO-BLACKLIST: ≥10 cycles AND <30% WR → added to weakCoinCache dynamically
+let coinTierCache      = {};
+let tierCacheUpdatedAt = 0;
+
+function getCoinTier(coinId) {
+  return coinTierCache[coinId] || 'probation';
+}
+
+function getTierThreshold(tier) {
+  if (tier === 'elite')    return 60;
+  if (tier === 'standard') return 65;
+  return 70; // probation
+}
+
+async function refreshCoinTierCache() {
+  try {
+    let triggers;
+    try { triggers = await db.getAllTriggers(3000); }
+    catch(e) { return; }
+
+    const byCoin = {};
+    for (const t of triggers) {
+      if (!byCoin[t.coin_id]) byCoin[t.coin_id] = [];
+      byCoin[t.coin_id].push(t);
+    }
+
+    const newTiers     = {};
+    const newBlacklist = new Set(KNOWN_WEAK_COINS); // start with hardcoded entries
+
+    for (const [coinId, ts] of Object.entries(byCoin)) {
+      const sorted = ts.sort((a, b) => new Date(a.fired_at) - new Date(b.fired_at));
+      let wins = 0, losses = 0, pendingBuy = null;
+      for (const t of sorted) {
+        if (t.type === 'BUY') { pendingBuy = t; }
+        else if ((t.type === 'SELL' || t.type === 'PEAK_EXIT') && pendingBuy) {
+          (t.price > pendingBuy.price) ? wins++ : losses++;
+          pendingBuy = null;
+        }
+      }
+      const cycles = wins + losses;
+      const wr     = cycles > 0 ? wins / cycles : 0;
+
+      if (cycles >= 10 && wr < 0.30) {
+        newBlacklist.add(coinId); // evidence of consistent losing
+        continue;
+      }
+
+      if (cycles >= 20 && wr >= 0.75) {
+        newTiers[coinId] = 'elite';
+      } else if (cycles >= 5 && wr >= 0.50) {
+        newTiers[coinId] = 'standard';
+      } else {
+        newTiers[coinId] = 'probation';
+      }
+    }
+
+    coinTierCache      = newTiers;
+    weakCoinCache      = newBlacklist; // replaces static set with static + dynamic
+    tierCacheUpdatedAt = Date.now();
+
+    const eliteC  = Object.values(newTiers).filter(t => t === 'elite').length;
+    const stdC    = Object.values(newTiers).filter(t => t === 'standard').length;
+    const probC   = Object.values(newTiers).filter(t => t === 'probation').length;
+    const autoBl  = newBlacklist.size - KNOWN_WEAK_COINS.size;
+    console.log(`  Tier cache: ${eliteC} elite, ${stdC} standard, ${probC} probation, ${autoBl} auto-blacklisted`);
+  } catch(e) {
+    console.error('refreshCoinTierCache error:', e.message);
+  }
+}
+
+// ── Time Filter Helpers ───────────────────────────────────────────────────────
+// Block paper trade entries 08:00-14:00 CET (historically ~41% WR)
+function cetHour(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Amsterdam', hour: '2-digit', hour12: false,
+  }).formatToParts(date);
+  return parseInt(parts.find(p => p.type === 'hour').value, 10);
+}
+
+function isTimeFilterBlocked() {
+  const h = cetHour();
+  return h >= 8 && h < 14;
 }
 
 function getSentimentTier(bearishPct) {
@@ -860,7 +958,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
   const { tier: volTier, buyBoost: volBoost } = getVolatilityTier(atrPct);
   const mcBoost   = getMarketCapBoost(id, coin.rank);
   const coinBoost = coinThresholdBoosts[id] || 0;
-  const effectiveBuyThresh = cfg.alphaThresh + coinBoost; // mcBoost & volBoost disabled — re-enable after 50 cycles
+  const tier = getCoinTier(id);                                      // elite/standard/probation
+  const effectiveBuyThresh = getTierThreshold(tier) + coinBoost;    // tier base + fine-grained WR adjustment
 
   await db.insertPricePoint({ coinId: id, price, alpha });
 
@@ -1025,7 +1124,17 @@ async function processCoin(coin, storedHistory, candleHistory) {
       prevState[id] = newState;
       // Persist to DB so position survives restarts
       await db.saveOpenPosition({ coinId: id.toLowerCase(), symbol, buyPrice: price, buyAlpha: alpha, openedAt: new Date(), peakAlpha: alpha, peakArmed: false, consecutiveAbove, peakPrice: price });
-      db.insertPaperTrade({ coinId: id, symbol, entryPrice: price, entryTime: new Date() }).catch(() => {});
+      // Paper trade: queue limit order at price -0.3%; cancel if time filter active
+      if (isTimeFilterBlocked()) {
+        timeFilterBlockedToday++;
+        timeFilterBlockedWeekly++;
+        console.log(`  PAPER BLOCKED  (time filter) ${symbol.padEnd(8)} [${cetHour()}:xx CET in 08-14 block]`);
+      } else {
+        const limitPrice = price * (1 - 0.003);
+        pendingLimitOrders[id] = { limitPrice, symbol, tier, pollsRemaining: 3 };
+        limitOrdersCreated++;
+        console.log(`  LIMIT QUEUED   ${symbol.padEnd(8)} limit=${limitPrice.toFixed(6)} (-0.3%, expires 3 polls)`);
+      }
       return;
     }
 
@@ -1211,9 +1320,9 @@ async function poll() {
     coinCache.data = coins;
     coinCache.updatedAt = new Date().toISOString();
 
-    // Refresh weak coin cache every 30 minutes
-    if (Date.now() - weakCacheUpdatedAt > 30 * 60 * 1000) {
-      refreshWeakCoinCache();
+    // Refresh coin tier cache every 10 minutes (updates thresholds + dynamic blacklist)
+    if (Date.now() - tierCacheUpdatedAt > 10 * 60 * 1000) {
+      await refreshCoinTierCache();
     }
 
     // Refresh coin-specific threshold boosts every 2 hours
@@ -1247,6 +1356,23 @@ async function poll() {
 
     // Update sector strength — determines which sectors get the +5 alpha bonus
     updateSectorStrength(coins);
+
+    // Check pending paper limit orders — fill if price reached, expire after 3 polls
+    for (const [coinId, order] of Object.entries(pendingLimitOrders)) {
+      const c = coins.find(coin => coin.id === coinId);
+      if (c && c.price <= order.limitPrice) {
+        db.insertPaperTrade({ coinId, symbol: order.symbol, entryPrice: order.limitPrice, entryTime: new Date(), tier: order.tier }).catch(() => {});
+        limitOrdersFilled++;
+        delete pendingLimitOrders[coinId];
+        console.log(`  LIMIT FILLED   ${order.symbol.padEnd(8)} @${order.limitPrice.toFixed(6)} [filled on drop]`);
+      } else {
+        order.pollsRemaining--;
+        if (order.pollsRemaining <= 0) {
+          delete pendingLimitOrders[coinId];
+          console.log(`  LIMIT EXPIRED  ${order.symbol.padEnd(8)} limit=${order.limitPrice.toFixed(6)} [3-poll timeout]`);
+        }
+      }
+    }
 
     // Process each coin
     for (const coin of coins) {
@@ -1457,6 +1583,7 @@ async function computeDailyReport() {
     hourlyTrendBlockedToday  = 0;
     rankBlockedToday         = 0;
     cooldownBlockedToday     = 0;
+    timeFilterBlockedToday   = 0;
     console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles overall, ${cleanCycles} v1, ${overallWr}% WR overall, ${cleanWr ?? '-'}% clean WR)`);
   } catch(e) {
     console.error('Daily report error:', e.message);
@@ -1611,9 +1738,40 @@ async function computeWeeklyReport() {
 
     msg += `\n🤖 Auto-recommendation:\n${recommendation}`;
 
+    // Tier distribution (from live tier cache)
+    const tierVals    = Object.values(coinTierCache);
+    const eliteCount  = tierVals.filter(t => t === 'elite').length;
+    const stdCount    = tierVals.filter(t => t === 'standard').length;
+    const probCount   = tierVals.filter(t => t === 'probation').length;
+    const autoBlCount = weakCoinCache.size - KNOWN_WEAK_COINS.size;
+    msg += `\n\n📊 Tier Distribution\n`;
+    msg += `Elite: ${eliteCount}  Standard: ${stdCount}  Probation: ${probCount}  Auto-blacklisted: ${autoBlCount}\n`;
+
+    // Limit order fill rate (cumulative since last reset)
+    const fillRate = limitOrdersCreated > 0
+      ? Math.round((limitOrdersFilled / limitOrdersCreated) * 100) : null;
+    msg += `\n⏱️ Limit Orders (this week)\n`;
+    msg += fillRate !== null
+      ? `Fill rate: ${fillRate}% (${limitOrdersFilled}/${limitOrdersCreated} filled within 3 polls)\n`
+      : `Fill rate: no data yet\n`;
+
+    // Time filter effectiveness — all-time WR inside vs outside 08-14 CET block
+    const allClosedPaper = paperTrades.filter(t => t.status === 'closed');
+    const inBlock  = allClosedPaper.filter(t => { const h = cetHour(new Date(t.entry_time)); return h >= 8 && h < 14; });
+    const outBlock = allClosedPaper.filter(t => { const h = cetHour(new Date(t.entry_time)); return !(h >= 8 && h < 14); });
+    const inWr  = inBlock.length  > 0 ? Math.round(inBlock.filter(t => t.pnl_eur > 0).length / inBlock.length * 100) : null;
+    const outWr = outBlock.length > 0 ? Math.round(outBlock.filter(t => t.pnl_eur > 0).length / outBlock.length * 100) : null;
+    msg += `\n⏰ Time Filter (08-14 CET block)\n`;
+    msg += `Inside window:  ${inWr  !== null ? `${inWr}% WR (${inBlock.length} trades)`  : 'no data'}\n`;
+    msg += `Outside window: ${outWr !== null ? `${outWr}% WR (${outBlock.length} trades)` : 'no data'}\n`;
+    msg += `Blocked this week: ${timeFilterBlockedWeekly} paper entries\n`;
+
     await sendTelegram(msg);
-    rankBlockedWeekly     = 0; // reset weekly counters
-    cooldownBlockedWeekly = 0;
+    rankBlockedWeekly        = 0; // reset weekly counters
+    cooldownBlockedWeekly    = 0;
+    timeFilterBlockedWeekly  = 0;
+    limitOrdersCreated       = 0; // reset so weekly fill rate reflects current week only
+    limitOrdersFilled        = 0;
     console.log(`  [WEEKLY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR, paper ${paperWr}% WR)`);
   } catch(e) {
     console.error('Weekly report error:', e.message);
@@ -1888,8 +2046,9 @@ async function start() {
     console.error('Failed to pre-load candle cache:', e.message);
   }
 
-  // Load coin-specific threshold boosts from historical trigger data
+  // Load coin-specific threshold boosts and initial tier cache
   const threshStats = await refreshCoinThresholds();
+  await refreshCoinTierCache();
 
   const threshLine = threshStats.total > 0
     ? `Thresholds: ${threshStats.raised} raised, ${threshStats.lowered} lowered (${threshStats.total} coins)`
