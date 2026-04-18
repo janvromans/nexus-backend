@@ -2143,3 +2143,8 @@ module.exports.getBtcTrend = () => btcTrend;
 module.exports.getMarketSentiment = () => marketSentiment;
 module.exports.forceClosePosition = forceClosePosition;
 module.exports.getPrevState = (coinId) => prevState[coinId?.toLowerCase()];
+module.exports.getCoinTierCache          = () => coinTierCache;
+module.exports.getWeakCoinCache          = () => weakCoinCache;
+module.exports.getKnownWeakCoins         = () => KNOWN_WEAK_COINS;
+module.exports.getLimitOrderStats        = () => ({ created: limitOrdersCreated, filled: limitOrdersFilled });
+module.exports.getTimeFilterBlockedToday = () => timeFilterBlockedToday;

@@ -395,29 +395,72 @@ app.get('/api/performance', auth, async (req, res) => {
   }
 });
 
+// ── GET /api/tiers ────────────────────────────────────────────────────────────
+// Returns current coin tier assignments from the live tier cache.
+app.get('/api/tiers', auth, (req, res) => {
+  const tierCache = poller.getCoinTierCache();
+  const weakCache = poller.getWeakCoinCache();
+
+  const elite = [], standard = [], probation = [];
+  for (const [coinId, tier] of Object.entries(tierCache)) {
+    if (tier === 'elite')         elite.push(coinId);
+    else if (tier === 'standard') standard.push(coinId);
+    else                          probation.push(coinId);
+  }
+  const auto_blacklisted = [...weakCache];
+
+  res.json({
+    elite,
+    standard,
+    probation,
+    auto_blacklisted,
+    summary: {
+      elite_count:       elite.length,
+      standard_count:    standard.length,
+      probation_count:   probation.length,
+      blacklisted_count: weakCache.size,
+    },
+  });
+});
+
 // ── GET /api/paper-trades ─────────────────────────────────────────────────────
 // Returns all paper trades (open + closed) with portfolio summary.
-// Starting balance: €1,000 (8 positions of €125 each, 0.50% round-trip fee).
+// Starting balance: €1,000; fee: 0.30% round-trip (maker rate).
 app.get('/api/paper-trades', auth, async (req, res) => {
   try {
     const trades     = await db.getPaperTrades();
     const closed     = trades.filter(t => t.status === 'closed');
     const open       = trades.filter(t => t.status === 'open');
     const wins       = closed.filter(t => t.pnl_eur > 0).length;
-    // gross = what pnl would be without fees; net = pnl_eur (already fee-deducted)
+    // gross = what pnl would be without fees; net = pnl_eur (already fee-deducted in db)
     const netPnlEur   = closed.reduce((s, t) => s + (t.pnl_eur || 0), 0);
-    const totalFees   = closed.reduce((s, t) => s + (t.position_size_eur || 0) * 0.005, 0);
+    const totalFees   = closed.reduce((s, t) => s + (t.position_size_eur || 0) * 0.003, 0);
     const grossPnlEur = netPnlEur + totalFees;
+
+    const tierBreakdown = {
+      elite:     open.filter(t => t.tier === 'elite').length,
+      standard:  open.filter(t => t.tier === 'standard').length,
+      probation: open.filter(t => t.tier === 'probation').length,
+    };
+
+    const { created, filled } = poller.getLimitOrderStats();
+    const limitFillRate = created > 0
+      ? `${Math.round((filled / created) * 100)}% (${filled}/${created})`
+      : null;
+
     res.json({
       trades,
       summary: {
-        total_trades:    closed.length,
-        open_trades:     open.length,
-        win_rate:        closed.length ? parseFloat(((wins / closed.length) * 100).toFixed(1)) : null,
-        gross_pnl_eur:   parseFloat(grossPnlEur.toFixed(2)),
-        total_fees_eur:  parseFloat(totalFees.toFixed(2)),
-        net_pnl_eur:     parseFloat(netPnlEur.toFixed(2)),
-        portfolio_value: parseFloat((1000 + netPnlEur).toFixed(2)),
+        total_trades:       closed.length,
+        open_trades:        open.length,
+        win_rate:           closed.length ? parseFloat(((wins / closed.length) * 100).toFixed(1)) : null,
+        gross_pnl_eur:      parseFloat(grossPnlEur.toFixed(2)),
+        total_fees_eur:     parseFloat(totalFees.toFixed(2)),
+        net_pnl_eur:        parseFloat(netPnlEur.toFixed(2)),
+        portfolio_value:    parseFloat((1000 + netPnlEur).toFixed(2)),
+        tier_breakdown:     tierBreakdown,
+        limit_fill_rate:    limitFillRate,
+        time_blocked_today: poller.getTimeFilterBlockedToday(),
       },
     });
   } catch (e) {
