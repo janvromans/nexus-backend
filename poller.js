@@ -411,6 +411,14 @@ function isTimeFilterBlocked() {
   return h >= 8 && h < 14;
 }
 
+function cetWindow(date) {
+  const h = cetHour(date);
+  if (h < 8)  return '00-08';
+  if (h < 14) return '08-14';
+  if (h < 20) return '14-20';
+  return '20-24';
+}
+
 function getSentimentTier(bearishPct) {
   if (bearishPct >= 70) return { tier: 'SEVERE'  };
   if (bearishPct >= 55) return { tier: 'WARNING' };
@@ -1754,6 +1762,44 @@ async function computeWeeklyReport() {
     msg += fillRate !== null
       ? `Fill rate: ${fillRate}% (${limitOrdersFilled}/${limitOrdersCreated} filled within 3 polls)\n`
       : `Fill rate: no data yet\n`;
+
+    // Time window performance — last 7 days from triggers table (BUY→SELL pairs by CET window)
+    const WINDOWS = ['00-08', '08-14', '14-20', '20-24'];
+    const winStats = Object.fromEntries(WINDOWS.map(w => [w, { wins: 0, total: 0 }]));
+    const byCoinW = {};
+    for (const t of triggers) {
+      if (!byCoinW[t.coin_id]) byCoinW[t.coin_id] = [];
+      byCoinW[t.coin_id].push(t);
+    }
+    for (const ts of Object.values(byCoinW)) {
+      const sorted = ts.slice().sort((a, b) => new Date(a.fired_at) - new Date(b.fired_at));
+      let pendingBuyW = null;
+      for (const t of sorted) {
+        if (t.type === 'BUY') { pendingBuyW = t; }
+        else if ((t.type === 'SELL' || t.type === 'PEAK_EXIT') && pendingBuyW) {
+          const w = cetWindow(new Date(pendingBuyW.fired_at));
+          winStats[w].total++;
+          if (t.price > pendingBuyW.price) winStats[w].wins++;
+          pendingBuyW = null;
+        }
+      }
+    }
+    msg += `\n📊 TIME WINDOW PERFORMANCE (last 7 days)\n`;
+    for (const w of WINDOWS) {
+      const s   = winStats[w];
+      const wr  = s.total > 0 ? Math.round(s.wins / s.total * 100) : null;
+      const tag = w === '08-14' ? ' [blocked]' : '';
+      msg += `${w} CET: ${wr !== null ? `${s.total} cycles, ${wr}% WR${tag}` : 'no data'}\n`;
+    }
+    const blockedWrW   = winStats['08-14'].total > 0 ? Math.round(winStats['08-14'].wins / winStats['08-14'].total * 100) : null;
+    const allWindowWrs = WINDOWS.map(w => winStats[w]).filter(s => s.total > 0).map(s => Math.round(s.wins / s.total * 100));
+    const bestWrW      = allWindowWrs.length > 0 ? Math.max(...allWindowWrs) : null;
+    if (blockedWrW !== null && blockedWrW > 55) {
+      msg += `⚠️ Consider removing time filter (blocked window improved to ${blockedWrW}% WR)\n`;
+    }
+    if (bestWrW !== null && bestWrW < 50) {
+      msg += `⚠️ Consider adjusting filter window (best window only ${bestWrW}% WR)\n`;
+    }
 
     // Time filter effectiveness — all-time WR inside vs outside 08-14 CET block
     const allClosedPaper = paperTrades.filter(t => t.status === 'closed');
