@@ -278,16 +278,28 @@ app.get('/api/coins', auth, async (req, res) => {
     }
 
     // Full mode — only fetch 24h history for top 50 coins (was 168h for 100)
-    // Saves ~14x egress vs original — sparklines still look good with 24h data
+    // Sparkline sampled every 15 minutes (96 pts) instead of every 90s (960 pts)
+    // — 90% smaller response, sparklines still look good at this resolution.
     const TOP_HISTORY_LIMIT = 50;
+    const SPARKLINE_INTERVAL_MS = 15 * 60 * 1000; // 1 point per 15 minutes
     const sorted = [...cache.data].sort((a, b) => (a.rank || 999) - (b.rank || 999));
 
     const coinsWithHistory = await Promise.all(
       sorted.map(async (coin, idx) => {
         try {
           if (idx < TOP_HISTORY_LIMIT) {
-            const history = await db.getPriceHistory(coin.id, 24); // 24h instead of 168h
-            return { ...coin, sparkline: history.map(h => h.price) };
+            const history = await db.getPriceHistory(coin.id, 24);
+            // Sample to one point per 15-minute bucket to reduce response size ~90%
+            const sampled = [];
+            let lastBucket = -1;
+            for (const h of history) {
+              const bucket = Math.floor(new Date(h.recorded_at).getTime() / SPARKLINE_INTERVAL_MS);
+              if (bucket !== lastBucket) {
+                sampled.push(h.price);
+                lastBucket = bucket;
+              }
+            }
+            return { ...coin, sparkline: sampled };
           }
           return { ...coin, sparkline: [] };
         } catch {

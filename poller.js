@@ -15,6 +15,12 @@ let pollCount = 0;
 let lastCandleFetch = 0;
 let candleMapCache  = {}; // { coinId: [{timestamp,open,high,low,close,volume}] }
 
+// ── Price History Cache ───────────────────────────────────────────────────────
+// getBulkPriceHistory is called every 90s (~14MB each). Cache for 5 minutes to
+// reduce DB queries from 960/day to 288/day — 70% fewer DB round-trips.
+let priceHistoryCache     = null; // { map: {coinId:[...]}, fetchedAt: ms }
+const PRICE_HISTORY_TTL   = 5 * 60 * 1000; // 5 minutes
+
 // ── Signal Block Counters ─────────────────────────────────────────────────────
 // Count confirmed BUY signals blocked at each filter stage — reset in daily report
 let volumeBlockedToday       = 0;
@@ -1338,9 +1344,10 @@ async function poll() {
       await refreshCoinThresholds();
     }
 
-    // Fetch hourly candles once per hour — update in-memory cache after fetch
-    // 9-day retention (216 candles) gives enough history to compute EMA200
-    if (Date.now() - lastCandleFetch >= 60 * 60 * 1000) {
+    // Fetch hourly candles once per 2 hours — candles are used for trend detection
+    // (EMA9/EMA21/EMA200), not real-time signals, so 2h cache is sufficient.
+    // Reduces getBulkCandles DB queries from 24/day to 12/day — 50% reduction.
+    if (Date.now() - lastCandleFetch >= 2 * 60 * 60 * 1000) {
       console.log('  Fetching hourly candles...');
       await fetchAndStoreCandles(coins);
       candleMapCache = await db.getBulkCandles(9);
@@ -1352,11 +1359,19 @@ async function poll() {
     }
 
     // Single bulk fetch — replaces N sequential getPriceHistory queries
+    // Cached for 5 minutes to reduce DB egress (960→288 fetches/day, ~70% reduction)
     const bulkStart = Date.now();
-    const historyMap = await db.getBulkPriceHistory(24);
-    const bulkCoins = Object.keys(historyMap).length;
-    const bulkRows  = Object.values(historyMap).reduce((s, h) => s + h.length, 0);
-    console.log(`  History: ${bulkRows} rows / ${bulkCoins} coins in ${Date.now()-bulkStart}ms (bulk, was ~${coins.length} queries)`);
+    let historyMap;
+    if (priceHistoryCache && (Date.now() - priceHistoryCache.fetchedAt) < PRICE_HISTORY_TTL) {
+      historyMap = priceHistoryCache.map;
+      console.log(`  History: cache hit (age ${Math.round((Date.now()-priceHistoryCache.fetchedAt)/1000)}s)`);
+    } else {
+      historyMap = await db.getBulkPriceHistory(24);
+      priceHistoryCache = { map: historyMap, fetchedAt: Date.now() };
+      const bulkCoins = Object.keys(historyMap).length;
+      const bulkRows  = Object.values(historyMap).reduce((s, h) => s + h.length, 0);
+      console.log(`  History: ${bulkRows} rows / ${bulkCoins} coins in ${Date.now()-bulkStart}ms (bulk, was ~${coins.length} queries)`);
+    }
 
     // Update BTC trend filter — data comes free from the bulk fetch
     updateBtcTrend(historyMap['bitcoin'] || []);
