@@ -330,7 +330,7 @@ function refreshWeakCoinCache() {
 
 // ── Dynamic Coin Tier Cache ───────────────────────────────────────────────────
 // Refreshed every 10 minutes from triggers table.
-// ELITE:          ≥20 cycles AND ≥75% WR → BUY threshold α≥60
+// ELITE:          ≥15 cycles AND ≥67% WR → BUY threshold α≥60
 // STANDARD:       5-19 cycles AND 50-74% WR → BUY threshold α≥65
 // PROBATION:      <5 cycles (or doesn't fit above) → BUY threshold α≥70
 // AUTO-BLACKLIST: ≥10 cycles AND <30% WR → added to weakCoinCache dynamically
@@ -380,7 +380,7 @@ async function refreshCoinTierCache() {
         continue;
       }
 
-      if (cycles >= 20 && wr >= 0.75) {
+      if (cycles >= 15 && wr >= 0.67) {
         newTiers[coinId] = 'elite';
       } else if (cycles >= 5 && wr >= 0.50) {
         newTiers[coinId] = 'standard';
@@ -1735,28 +1735,28 @@ async function computeWeeklyReport() {
 
     // Elite Tier tracking — all-time cycle stats per coin
     const { rows: allTimeRows } = buildCycleRows(allTimeTriggers);
-    const eliteConfirmed  = allTimeRows.filter(r => r.cycles >= 20 && r.wr >= 75)
+    const eliteConfirmed  = allTimeRows.filter(r => r.cycles >= 15 && r.wr >= 67)
       .sort((a, b) => b.wr - a.wr || b.cycles - a.cycles);
-    const eliteCandidates = allTimeRows.filter(r => r.cycles >= 10 && r.cycles < 20 && r.wr >= 75)
+    const eliteCandidates = allTimeRows.filter(r => r.cycles >= 10 && r.cycles < 15 && r.wr >= 67)
       .sort((a, b) => b.cycles - a.cycles || b.wr - a.wr);
 
     msg += `\n🏆 ELITE TIER TRACKING\n`;
     if (eliteCandidates.length > 0) {
-      msg += `Candidates approaching 20 cycles (75%+ WR):\n`;
+      msg += `Candidates approaching 15 cycles (67%+ WR):\n`;
       for (const r of eliteCandidates) {
-        const needed = 20 - r.cycles;
+        const needed = 15 - r.cycles;
         msg += `- ${r.symbol}: ${r.cycles} cycles, ${r.wr}% WR (needs ${needed} more)\n`;
       }
     } else {
-      msg += `Candidates approaching 20 cycles (75%+ WR):\n- None yet\n`;
+      msg += `Candidates approaching 15 cycles (67%+ WR):\n- None yet\n`;
     }
     if (eliteConfirmed.length > 0) {
-      msg += `Confirmed Elite (20+ cycles, 75%+ WR):\n`;
+      msg += `Confirmed Elite (15+ cycles, 67%+ WR):\n`;
       for (const r of eliteConfirmed) {
         msg += `- ${r.symbol}: ${r.cycles} cycles, ${r.wr}% WR\n`;
       }
     } else {
-      msg += `Confirmed Elite (20+ cycles, 75%+ WR):\n- None yet\n`;
+      msg += `Confirmed Elite (15+ cycles, 67%+ WR):\n- None yet\n`;
     }
 
     msg += `\n🤖 Auto-recommendation:\n${recommendation}`;
