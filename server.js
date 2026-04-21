@@ -480,6 +480,36 @@ app.get('/api/paper-trades', auth, async (req, res) => {
   }
 });
 
+// ── GET /api/elite-paper-trades ───────────────────────────────────────────────
+// Returns all elite paper trades (open + closed) with portfolio summary.
+// Starting balance: €1,000; fee: 0.30% round-trip; max 3 positions; €125/trade.
+app.get('/api/elite-paper-trades', auth, async (req, res) => {
+  try {
+    const trades    = await db.getElitePaperTrades();
+    const closed    = trades.filter(t => t.status === 'closed');
+    const open      = trades.filter(t => t.status === 'open');
+    const wins      = closed.filter(t => t.pnl_eur > 0).length;
+    const netPnlEur   = closed.reduce((s, t) => s + (t.pnl_eur || 0), 0);
+    const totalFees   = closed.reduce((s, t) => s + (t.position_size_eur || 0) * 0.003, 0);
+    const grossPnlEur = netPnlEur + totalFees;
+
+    res.json({
+      trades,
+      summary: {
+        total_trades:    closed.length,
+        open_trades:     open.length,
+        win_rate:        closed.length ? parseFloat(((wins / closed.length) * 100).toFixed(1)) : null,
+        gross_pnl_eur:   parseFloat(grossPnlEur.toFixed(2)),
+        total_fees_eur:  parseFloat(totalFees.toFixed(2)),
+        net_pnl_eur:     parseFloat(netPnlEur.toFixed(2)),
+        portfolio_value: parseFloat((1000 + netPnlEur).toFixed(2)),
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 async function main() {
   await db.init();

@@ -1236,6 +1236,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
           sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
           prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveBelow: 0 };
           db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'PEAK_EXIT' }).catch(() => {});
+          db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'PEAK_EXIT' }).catch(() => {});
           await db.deleteOpenPosition(id);
           return;
         }
@@ -1261,6 +1262,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
         sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha, peakPrice: null, consecutiveBelow: 0 };
         db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'TRAILING_STOP' }).catch(() => {});
+        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'TRAILING_STOP' }).catch(() => {});
         await db.deleteOpenPosition(id);
         return;
       }
@@ -1280,6 +1282,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
         sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha, consecutiveBelow: 0 };
         db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'STOP_LOSS' }).catch(() => {});
+        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'STOP_LOSS' }).catch(() => {});
         await db.deleteOpenPosition(id);
         return;
       }
@@ -1299,6 +1302,7 @@ async function processCoin(coin, storedHistory, candleHistory) {
       const paperPnlPct = prev.buyPrice ? ((price - prev.buyPrice) / prev.buyPrice) * 100 : null;
       if (paperPnlPct === null || paperPnlPct > 0.6) {
         db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch(() => {});
+        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch(() => {});
       } else {
         console.log(`  PAPER HOLD ${symbol.padEnd(8)} pnl=${paperPnlPct.toFixed(2)}% ≤ 0.6% — skipping paper close, holding`);
       }
@@ -1385,6 +1389,9 @@ async function poll() {
       const c = coins.find(coin => coin.id === coinId);
       if (c && c.price <= order.limitPrice) {
         db.insertPaperTrade({ coinId, symbol: order.symbol, entryPrice: order.limitPrice, entryTime: new Date(), tier: order.tier }).catch(() => {});
+        if (order.tier === 'elite') {
+          db.insertElitePaperTrade({ coinId, symbol: order.symbol, entryPrice: order.limitPrice, entryTime: new Date() }).catch(() => {});
+        }
         limitOrdersFilled++;
         delete pendingLimitOrders[coinId];
         console.log(`  LIMIT FILLED   ${order.symbol.padEnd(8)} @${order.limitPrice.toFixed(6)} [filled on drop]`);
@@ -1682,16 +1689,26 @@ async function computeWeeklyReport() {
       ? `${sectorRanked[0][0]} (${sectorRanked[0][1] >= 0 ? '+' : ''}${sectorRanked[0][1].toFixed(1)}%)`
       : 'n/a';
 
-    // Paper trading
+    // Paper trading — standard portfolio (all paper_trades)
     const paperTrades = await db.getPaperTrades();
     const closedPaper = paperTrades.filter(t => t.status === 'closed');
     const totalPnlEur = closedPaper.reduce((s, t) => s + (t.pnl_eur || 0), 0);
     const portfolioVal = 1000 + totalPnlEur;
+    const stdPct       = (totalPnlEur / 1000) * 100;
     const weekAgo     = new Date(Date.now() - 7 * 86400000);
     const weekClosed  = closedPaper.filter(t => new Date(t.exit_time) > weekAgo);
     const weekPnl     = weekClosed.reduce((s, t) => s + (t.pnl_eur || 0), 0);
     const paperWins   = closedPaper.filter(t => t.pnl_eur > 0).length;
     const paperWr     = closedPaper.length ? Math.round((paperWins / closedPaper.length) * 100) : 0;
+
+    // Paper trading — elite portfolio (elite_paper_trades)
+    const eliteTrades     = await db.getElitePaperTrades();
+    const closedElite     = eliteTrades.filter(t => t.status === 'closed');
+    const elitePnlEur     = closedElite.reduce((s, t) => s + (t.pnl_eur || 0), 0);
+    const elitePortVal    = 1000 + elitePnlEur;
+    const elitePct        = (elitePnlEur / 1000) * 100;
+    const eliteWins       = closedElite.filter(t => t.pnl_eur > 0).length;
+    const eliteWr         = closedElite.length ? Math.round((eliteWins / closedElite.length) * 100) : null;
 
     // Auto-recommendation
     const recommendation = paperWr < 40
@@ -1711,10 +1728,9 @@ async function computeWeeklyReport() {
     msg += `Cycles: ${totalCycles} completed\n`;
     msg += `Profit factor: ${profitFactor}\n`;
 
-    msg += `\n💰 Paper Trading\n`;
-    msg += `Portfolio: €${portfolioVal.toFixed(2)} (started €1,000)\n`;
-    msg += `Week P&L: ${weekPnl >= 0 ? '+' : ''}€${weekPnl.toFixed(2)}\n`;
-    msg += `Win rate: ${paperWr}%\n`;
+    msg += `\n💼 STANDARD PORTFOLIO: €${portfolioVal.toFixed(2)} (${stdPct >= 0 ? '+' : ''}${stdPct.toFixed(1)}%) WR: ${paperWr}%\n`;
+    msg += `🏆 ELITE PORTFOLIO: €${elitePortVal.toFixed(2)} (${elitePct >= 0 ? '+' : ''}${elitePct.toFixed(1)}%) WR: ${eliteWr !== null ? `${eliteWr}%` : 'n/a'}\n`;
+    msg += `Week P&L: ${weekPnl >= 0 ? '+' : ''}€${weekPnl.toFixed(2)} (standard)\n`;
 
     if (top3.length > 0) {
       msg += `\n🏆 Top coins:\n`;
@@ -1833,7 +1849,7 @@ async function computeWeeklyReport() {
     timeFilterBlockedWeekly  = 0;
     limitOrdersCreated       = 0; // reset so weekly fill rate reflects current week only
     limitOrdersFilled        = 0;
-    console.log(`  [WEEKLY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR, paper ${paperWr}% WR)`);
+    console.log(`  [WEEKLY REPORT] Sent to Telegram (${totalCycles} cycles, ${overallWr}% WR, std paper ${paperWr}% WR, elite paper ${eliteWr ?? 'n/a'}% WR)`);
   } catch(e) {
     console.error('Weekly report error:', e.message);
   }
@@ -2139,6 +2155,7 @@ async function forceClosePosition(coinId) {
 
   await db.insertTrigger({ coinId, symbol, type: 'SELL', price, alpha, reason });
   db.closePaperTrade({ coinId, exitPrice: price, exitTime: new Date(), exitReason: 'FORCE_CLOSE' }).catch(() => {});
+  db.closeElitePaperTrade({ coinId, exitPrice: price, exitTime: new Date(), exitReason: 'FORCE_CLOSE' }).catch(() => {});
   await db.deleteOpenPosition(coinId);
 
   if (prev) {

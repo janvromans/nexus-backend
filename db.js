@@ -96,6 +96,22 @@ async function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_paper_coin ON paper_trades(coin_id);
 
+    CREATE TABLE IF NOT EXISTS elite_paper_trades (
+      id                SERIAL PRIMARY KEY,
+      coin_id           TEXT NOT NULL,
+      symbol            TEXT NOT NULL,
+      entry_price       REAL NOT NULL,
+      exit_price        REAL,
+      entry_time        TIMESTAMPTZ DEFAULT NOW(),
+      exit_time         TIMESTAMPTZ,
+      position_size_eur REAL NOT NULL DEFAULT 125,
+      pnl_eur           REAL,
+      pnl_pct           REAL,
+      exit_reason       TEXT,
+      status            TEXT NOT NULL DEFAULT 'open'
+    );
+    CREATE INDEX IF NOT EXISTS idx_elite_paper_coin ON elite_paper_trades(coin_id);
+
     CREATE TABLE IF NOT EXISTS early_warnings (
       id        SERIAL PRIMARY KEY,
       coin_id   TEXT NOT NULL,
@@ -485,6 +501,49 @@ async function getPaperTradeSummaryToday() {
   return rows[0];
 }
 
+// ── Elite Paper Trades ────────────────────────────────────────────────────────
+// Separate portfolio for Elite-tier coins only.
+// €1,000 starting balance, €125 per trade, max 3 simultaneous positions, 0.30% fee.
+const ELITE_PAPER_POSITION_SIZE = 125;
+const ELITE_PAPER_MAX_POSITIONS = 3;
+
+async function insertElitePaperTrade({ coinId, symbol, entryPrice, entryTime }) {
+  await pool.query(
+    `INSERT INTO elite_paper_trades (coin_id, symbol, entry_price, entry_time, position_size_eur, status)
+     SELECT $1, $2, $3, $4, $5, 'open'
+     WHERE (SELECT COUNT(*) FROM elite_paper_trades WHERE status = 'open') < $6`,
+    [coinId, symbol, entryPrice, entryTime || new Date(), ELITE_PAPER_POSITION_SIZE, ELITE_PAPER_MAX_POSITIONS]
+  );
+}
+
+async function closeElitePaperTrade({ coinId, exitPrice, exitTime, exitReason }) {
+  const { rows } = await pool.query(
+    `SELECT id, entry_price, position_size_eur FROM elite_paper_trades
+     WHERE coin_id = $1 AND status = 'open'
+     ORDER BY entry_time DESC LIMIT 1`,
+    [coinId]
+  );
+  if (!rows.length) return;
+  const { id, entry_price, position_size_eur } = rows[0];
+  const pnlPct   = ((exitPrice - entry_price) / entry_price) * 100;
+  const grossPnl = (pnlPct / 100) * position_size_eur;
+  const feeEur   = position_size_eur * PAPER_FEE_PCT;
+  const pnlEur   = grossPnl - feeEur;
+  await pool.query(
+    `UPDATE elite_paper_trades SET
+       exit_price=$1, exit_time=$2, pnl_eur=$3, pnl_pct=$4, exit_reason=$5, status='closed'
+     WHERE id=$6`,
+    [exitPrice, exitTime || new Date(), pnlEur, pnlPct, exitReason, id]
+  );
+}
+
+async function getElitePaperTrades() {
+  const { rows } = await pool.query(
+    `SELECT * FROM elite_paper_trades ORDER BY entry_time DESC`
+  );
+  return rows;
+}
+
 module.exports = {
   init, insertTrigger, getTriggers, getAllTriggers, getRecentTriggers,
   insertPricePoint, getPriceHistory, getBulkPriceHistory, purgePriceHistoryBulk,
@@ -496,4 +555,5 @@ module.exports = {
   insertEarlyWarning, getEarlyWarningsCount, getEarlyWarnings,
   insertHourlyBlock, getPendingHourlyBlocks, updateHourlyBlockOutcome, getHourlyBlocks,
   insertPaperTrade, closePaperTrade, getPaperTrades, getPaperTradeSummaryToday,
+  insertElitePaperTrade, closeElitePaperTrade, getElitePaperTrades,
 };
