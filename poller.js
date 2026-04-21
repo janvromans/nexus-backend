@@ -1607,6 +1607,26 @@ async function computeDailyReport() {
       console.error('Paper trading summary error:', e.message);
     }
 
+    // Elite paper trading summary
+    try {
+      const eliteTrades  = await db.getElitePaperTrades();
+      const closedElite  = eliteTrades.filter(t => t.status === 'closed');
+      const openElite    = eliteTrades.filter(t => t.status === 'open');
+      const elitePnlEur  = closedElite.reduce((s, t) => s + (t.pnl_eur || 0), 0);
+      const elitePortVal = 1000 + elitePnlEur;
+      const todayElite   = closedElite.filter(t => new Date(t.exit_time) > new Date(Date.now() - 86400000));
+      const todayElitePnl = todayElite.reduce((s, t) => s + (t.pnl_eur || 0), 0);
+      const eliteWins    = closedElite.filter(t => t.pnl_eur > 0).length;
+      const eliteWr      = closedElite.length ? Math.round((eliteWins / closedElite.length) * 100) : 0;
+      msg += `\n\n🏆 ELITE PAPER TRADING\n`;
+      msg += `Portfolio: €${elitePortVal.toFixed(2)} (started €1,000)\n`;
+      msg += `Today: ${todayElitePnl >= 0 ? '+' : ''}€${todayElitePnl.toFixed(2)}\n`;
+      msg += `Win rate: ${eliteWr}% (${closedElite.length} closed)\n`;
+      msg += `Open positions: ${openElite.length}`;
+    } catch(e) {
+      console.error('Elite paper trading summary error:', e.message);
+    }
+
     await sendTelegram(msg);
     volumeBlockedToday       = 0; // reset daily counters
     liquidityBlockedToday    = 0;
