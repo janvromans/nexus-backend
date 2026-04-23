@@ -1144,10 +1144,10 @@ async function processCoin(coin, storedHistory, candleHistory) {
         timeFilterBlockedWeekly++;
         console.log(`  PAPER BLOCKED  (time filter) ${symbol.padEnd(8)} [${cetHour()}:xx CET in 08-14 block]`);
       } else {
-        const limitPrice = price * (1 - 0.003);
+        const limitPrice = price * (1 - 0.001);
         pendingLimitOrders[id] = { limitPrice, symbol, tier, pollsRemaining: 3 };
         limitOrdersCreated++;
-        console.log(`  LIMIT QUEUED   ${symbol.padEnd(8)} limit=${limitPrice.toFixed(6)} (-0.3%, expires 3 polls)`);
+        console.log(`  LIMIT QUEUED   ${symbol.padEnd(8)} limit=${limitPrice.toFixed(6)} (-0.1%, expires 3 polls)`);
       }
       return;
     }
