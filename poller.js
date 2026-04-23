@@ -1,9 +1,9 @@
-// poller.js — Fetches top 100 coins every 90s using stored history for Alpha Score
+// poller.js — Fetches top 100 coins every 120s using stored history for Alpha Score
 
 const { computeAlphaScore, computeBreakoutScore, DEFAULT_CFG } = require('./alpha');
 const db = require('./db');
 
-const POLL_INTERVAL_MS = 90 * 1000;
+const POLL_INTERVAL_MS = 120 * 1000;
 const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
