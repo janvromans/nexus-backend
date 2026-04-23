@@ -93,6 +93,37 @@ app.get('/api/config', auth, (req, res) => {
   res.json({ alphaThresh: DEFAULT_CFG.alphaThresh, alphaSellThresh: DEFAULT_CFG.alphaSellThresh });
 });
 
+// ── GET /api/health ───────────────────────────────────────────────────────────
+// Structured health check for monitoring and frontend warning banner
+app.get('/api/health', async (req, res) => {
+  const cache = poller.getCoinCache();
+  const lastPollAt = cache.updatedAt ? new Date(cache.updatedAt).getTime() : null;
+  const lastPollAgoSeconds = lastPollAt ? Math.floor((Date.now() - lastPollAt) / 1000) : null;
+
+  let dbConnected = false;
+  let signalsToday = 0;
+  let openPositions = 0;
+  try {
+    await db.ping();
+    dbConnected = true;
+    [signalsToday, openPositions] = await Promise.all([
+      db.getSignalsTodayCount(),
+      db.getAllOpenPositions().then(r => r.length),
+    ]);
+  } catch (e) {
+    console.error('/api/health db error:', e.message);
+  }
+
+  res.json({
+    coins_tracked: cache.data ? cache.data.length : 0,
+    prices_updating: lastPollAgoSeconds !== null && lastPollAgoSeconds < 300,
+    last_poll_ago_seconds: lastPollAgoSeconds,
+    db_connected: dbConnected,
+    signals_today: signalsToday,
+    open_positions: openPositions,
+  });
+});
+
 // ── GET /api/status ───────────────────────────────────────────────────────────
 // Health check — returns uptime and last poll time
 const startTime = new Date();

@@ -2016,12 +2016,34 @@ async function checkSystemHealth(coinsCount, statesCount) {
     issues.push(`⚠️ Only ${coinsCount} coins fetched — Bitvavo may have issues`);
   }
 
+  // Check DB connectivity
+  try {
+    await db.ping();
+  } catch (e) {
+    issues.push(`🔴 DB connection failed: ${e.message}`);
+  }
+
   if (issues.length > 0) {
     lastHealthAlert = now;
     const msg = `🔧 NEXUS SYSTEM ALERT\n────────────────────────\n${issues.join('\n')}\n\nSystem is monitoring and will self-recover.`;
     await sendTelegram(msg);
     console.log(`  [HEALTH ALERT] ${issues.join(' | ')}`);
   }
+}
+
+// ── Poller Watchdog ───────────────────────────────────────────────────────────
+// Runs every 60s to detect if the poll loop has silently stalled (> 5 min gap)
+let lastWatchdogAlert = 0;
+function startPollerWatchdog() {
+  setInterval(async () => {
+    if (!coinCache.updatedAt) return;
+    const agoSeconds = Math.floor((Date.now() - new Date(coinCache.updatedAt).getTime()) / 1000);
+    if (agoSeconds > 300 && Date.now() - lastWatchdogAlert > HEALTH_ALERT_COOLDOWN) {
+      lastWatchdogAlert = Date.now();
+      await sendTelegram(`🔧 NEXUS SYSTEM ALERT\n────────────────────────\n⚠️ Poller appears stuck — last poll was ${agoSeconds}s ago (expected every ${POLL_INTERVAL_MS / 1000}s)\n\nCheck Railway logs for errors.`);
+      console.log(`  [WATCHDOG] Poller stuck — last poll ${agoSeconds}s ago`);
+    }
+  }, 60 * 1000);
 }
 
 async function start() {
@@ -2154,6 +2176,7 @@ async function start() {
   scheduleDailyReport();
   scheduleWeeklyReport();
   scheduleMorningReport();
+  startPollerWatchdog();
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);
 }

@@ -327,6 +327,17 @@ async function purgeOldTriggers() {
   await pool.query(`DELETE FROM triggers WHERE fired_at < NOW() - INTERVAL '90 days'`);
 }
 
+async function ping() {
+  await pool.query('SELECT 1');
+}
+
+async function getSignalsTodayCount() {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS count FROM triggers WHERE fired_at >= NOW() - INTERVAL '24 hours' AND type = 'BUY'`
+  );
+  return rows[0].count;
+}
+
 async function purgeTriggersBeforeDate(isoDate) {
   const result = await pool.query(
     `DELETE FROM triggers WHERE fired_at < $1`,
@@ -545,7 +556,8 @@ async function getElitePaperTrades() {
 }
 
 module.exports = {
-  init, insertTrigger, getTriggers, getAllTriggers, getRecentTriggers,
+  init, ping, getSignalsTodayCount,
+  insertTrigger, getTriggers, getAllTriggers, getRecentTriggers,
   insertPricePoint, getPriceHistory, getBulkPriceHistory, purgePriceHistoryBulk,
   upsertCandles, getBulkCandles, purgeOldCandles,
   addTrackedCoin, removeTrackedCoin, getTrackedCoins,
