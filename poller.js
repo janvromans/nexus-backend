@@ -1863,6 +1863,31 @@ async function computeWeeklyReport() {
     msg += `Outside window: ${outWr !== null ? `${outWr}% WR (${outBlock.length} trades)` : 'no data'}\n`;
     msg += `Blocked this week: ${timeFilterBlockedWeekly} paper entries\n`;
 
+    // System health section
+    const openPositions  = await db.getAllOpenPositions();
+    const openPosCount   = openPositions.length;
+    const lastPollAgo    = coinCache.updatedAt
+      ? Math.floor((Date.now() - new Date(coinCache.updatedAt).getTime()) / 1000)
+      : null;
+    const coinsTracked   = coinCache.data.length;
+    const openPaperCount = paperTrades.filter(t => t.status === 'open').length;
+    const eliteWeekClosed = closedElite.filter(t => new Date(t.exit_time) > weekAgo);
+    const openEliteCount = eliteTrades.filter(t => t.status === 'open').length;
+    const paperIsHealthy = weekClosed.length > 0 || openPaperCount > 0
+      || eliteWeekClosed.length > 0 || openEliteCount > 0 || totalCycles === 0;
+
+    msg += `\n\n🏥 SYSTEM HEALTH\n`;
+    msg += `Coins tracked: ${coinsTracked} ${coinsTracked >= 100 ? '✅ normal' : '⚠️ low'}\n`;
+    if (lastPollAgo !== null) {
+      msg += `Last poll: ${lastPollAgo}s ago ${lastPollAgo < 300 ? '✅' : '⚠️ delayed'}\n`;
+    } else {
+      msg += `Last poll: ⚠️ unknown\n`;
+    }
+    msg += `Open positions: ${openPosCount} ${openPosCount <= 10 ? '✅ normal' : '⚠️ high'}\n`;
+    msg += `Blacklist active: ${weakCoinCache.size} coins\n`;
+    msg += `Auto-blacklisted this week: ${autoBlCount} coins\n`;
+    msg += `Paper trading: ${paperIsHealthy ? '✅ healthy' : '⚠️ issue detected'}\n`;
+
     await sendTelegram(msg);
     rankBlockedWeekly        = 0; // reset weekly counters
     cooldownBlockedWeekly    = 0;
