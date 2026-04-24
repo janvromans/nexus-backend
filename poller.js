@@ -2015,6 +2015,68 @@ function scheduleMorningReport() {
   scheduleNext();
 }
 
+// ── Stale Paper Trade Cleanup (daily at midnight CET) ────────────────────────
+async function runStalePaperTradeCleanup() {
+  try {
+    const stale   = await db.getStaleOpenPaperTrades(7);
+    const staleEl = await db.getStaleOpenElitePaperTrades(7);
+    const all = [
+      ...stale.map(t   => ({ ...t, portfolio: 'standard' })),
+      ...staleEl.map(t => ({ ...t, portfolio: 'elite' })),
+    ];
+    if (!all.length) {
+      console.log('  [STALE CLEANUP] No stale open paper trades found.');
+      return;
+    }
+
+    const lines = [];
+    for (const t of all) {
+      const coinId   = t.coin_id;
+      const price    = prevState[coinId]?.price || 0;
+      const exitTime = new Date();
+      if (t.portfolio === 'standard') {
+        await db.closePaperTrade({ coinId, exitPrice: price, exitTime, exitReason: 'STALE_7D' });
+      } else {
+        await db.closeElitePaperTrade({ coinId, exitPrice: price, exitTime, exitReason: 'STALE_7D' });
+      }
+      const days = Math.floor((Date.now() - new Date(t.entry_time).getTime()) / 86400000);
+      console.log(`  PAPER TRADE AUTO-CLOSED (stale: 7+ days) ${t.symbol.toUpperCase()} — held ${days}d @ €${price}`);
+      lines.push(`• ${t.symbol.toUpperCase()} [${t.portfolio}] — held ${days}d, entry €${t.entry_price}, exit €${price}`);
+    }
+
+    const msg = `STALE PAPER TRADE CLEANUP\n────────────────────────\nAuto-closed ${all.length} position(s) open >7 days:\n${lines.join('\n')}`;
+    await sendTelegram(msg);
+  } catch (e) {
+    console.error('  [STALE CLEANUP] Error:', e.message);
+  }
+}
+
+function scheduleStaleTradeCleanup() {
+  // Run at 00:00 CET = 23:00 UTC
+  const TARGET_HOUR_UTC = 23;
+  const TARGET_MIN_UTC  = 0;
+
+  function msUntilNext() {
+    const now  = new Date();
+    const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), TARGET_HOUR_UTC, TARGET_MIN_UTC, 0));
+    if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+    return next - now;
+  }
+
+  function scheduleNext() {
+    const ms  = msUntilNext();
+    const hrs = Math.floor(ms / 3600000);
+    const min = Math.floor((ms % 3600000) / 60000);
+    console.log(`  Stale trade cleanup scheduled in ${hrs}h ${min}m (00:00 CET)`);
+    setTimeout(async () => {
+      await runStalePaperTradeCleanup();
+      scheduleNext();
+    }, ms);
+  }
+
+  scheduleNext();
+}
+
 // ── System Health Alerts ──────────────────────────────────────────────────────
 // Fires instantly when system detects its own issues
 let lastHealthAlert = 0;
@@ -2201,6 +2263,7 @@ async function start() {
   scheduleDailyReport();
   scheduleWeeklyReport();
   scheduleMorningReport();
+  scheduleStaleTradeCleanup();
   startPollerWatchdog();
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);

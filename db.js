@@ -512,6 +512,26 @@ async function getPaperTradeSummaryToday() {
   return rows[0];
 }
 
+async function getStaleOpenPaperTrades(days = 7) {
+  const { rows } = await pool.query(
+    `SELECT * FROM paper_trades
+     WHERE status = 'open' AND entry_time < NOW() - INTERVAL '1 day' * $1
+     ORDER BY entry_time ASC`,
+    [days]
+  );
+  return rows;
+}
+
+async function getStaleOpenElitePaperTrades(days = 7) {
+  const { rows } = await pool.query(
+    `SELECT * FROM elite_paper_trades
+     WHERE status = 'open' AND entry_time < NOW() - INTERVAL '1 day' * $1
+     ORDER BY entry_time ASC`,
+    [days]
+  );
+  return rows;
+}
+
 // ── Elite Paper Trades ────────────────────────────────────────────────────────
 // Separate portfolio for Elite-tier coins only.
 // €1,000 starting balance, €125 per trade, max 3 simultaneous positions, 0.30% fee.
@@ -567,5 +587,6 @@ module.exports = {
   insertEarlyWarning, getEarlyWarningsCount, getEarlyWarnings,
   insertHourlyBlock, getPendingHourlyBlocks, updateHourlyBlockOutcome, getHourlyBlocks,
   insertPaperTrade, closePaperTrade, getPaperTrades, getPaperTradeSummaryToday,
+  getStaleOpenPaperTrades, getStaleOpenElitePaperTrades,
   insertElitePaperTrade, closeElitePaperTrade, getElitePaperTrades,
 };
