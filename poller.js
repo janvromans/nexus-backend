@@ -1139,15 +1139,24 @@ async function processCoin(coin, storedHistory, candleHistory) {
       // Persist to DB so position survives restarts
       await db.saveOpenPosition({ coinId: id.toLowerCase(), symbol, buyPrice: price, buyAlpha: alpha, openedAt: new Date(), peakAlpha: alpha, peakArmed: false, consecutiveAbove, peakPrice: price });
       // Paper trade: queue limit order at price -0.3%; cancel if time filter active
+      if (tier === 'elite') {
+        console.log(`  ELITE BUY SIGNAL: ${symbol} tier=elite — checking time filter (${cetHour()}:xx CET)`);
+      }
       if (isTimeFilterBlocked()) {
         timeFilterBlockedToday++;
         timeFilterBlockedWeekly++;
         console.log(`  PAPER BLOCKED  (time filter) ${symbol.padEnd(8)} [${cetHour()}:xx CET in 08-14 block]`);
+        if (tier === 'elite') {
+          console.log(`  ELITE PAPER TRADE BLOCKED (time filter): ${symbol} tier=elite [${cetHour()}:xx CET in 08-14 block] — no limit order queued`);
+        }
       } else {
         const limitPrice = price * (1 - 0.001);
         pendingLimitOrders[id] = { limitPrice, symbol, tier, pollsRemaining: 3 };
         limitOrdersCreated++;
         console.log(`  LIMIT QUEUED   ${symbol.padEnd(8)} limit=${limitPrice.toFixed(6)} (-0.1%, expires 3 polls)`);
+        if (tier === 'elite') {
+          console.log(`  ELITE PAPER TRADE QUEUED: ${symbol} tier=elite limit=${limitPrice.toFixed(6)}`);
+        }
       }
       return;
     }
@@ -1235,8 +1244,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
           console.log(`  PEAK_EXIT ${symbol.padEnd(8)} a=${peakAlpha}→${alpha} RSI=${rsiNow?.toFixed(1)} @ $${price} [held ${Math.round(holdMs/60000)}min]`);
           sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
           prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveBelow: 0 };
-          db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'PEAK_EXIT' }).catch(() => {});
-          db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'PEAK_EXIT' }).catch(() => {});
+          db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'PEAK_EXIT' }).catch((err) => console.error('closePaperTrade failed:', err));
+          db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'PEAK_EXIT' }).catch((err) => console.error('closeElitePaperTrade failed:', err));
           await db.deleteOpenPosition(id);
           return;
         }
@@ -1261,8 +1270,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
         console.log(`  TRAILING_STOP ${symbol.padEnd(8)} ${drawdownPct.toFixed(1)}% from peak $${peakPrice} @ $${price} [held ${Math.round(holdMs/60000)}min]`);
         sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha, peakPrice: null, consecutiveBelow: 0 };
-        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'TRAILING_STOP' }).catch(() => {});
-        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'TRAILING_STOP' }).catch(() => {});
+        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'TRAILING_STOP' }).catch((err) => console.error('closePaperTrade failed:', err));
+        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'TRAILING_STOP' }).catch((err) => console.error('closeElitePaperTrade failed:', err));
         await db.deleteOpenPosition(id);
         return;
       }
@@ -1281,8 +1290,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
         console.log(`  STOP-LOSS ${symbol.padEnd(8)} ${openPnl.toFixed(1)}% @ $${price} [held ${Math.round(holdMs/60000)}min]`);
         sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha, consecutiveBelow: 0 };
-        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'STOP_LOSS' }).catch(() => {});
-        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'STOP_LOSS' }).catch(() => {});
+        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'STOP_LOSS' }).catch((err) => console.error('closePaperTrade failed:', err));
+        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'STOP_LOSS' }).catch((err) => console.error('closeElitePaperTrade failed:', err));
         await db.deleteOpenPosition(id);
         return;
       }
@@ -1301,8 +1310,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
       // Real signal fires unconditionally — this only affects paper trade accounting.
       const paperPnlPct = prev.buyPrice ? ((price - prev.buyPrice) / prev.buyPrice) * 100 : null;
       if (paperPnlPct === null || paperPnlPct > 0.6) {
-        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch(() => {});
-        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch(() => {});
+        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch((err) => console.error('closePaperTrade failed:', err));
+        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch((err) => console.error('closeElitePaperTrade failed:', err));
       } else {
         console.log(`  PAPER HOLD ${symbol.padEnd(8)} pnl=${paperPnlPct.toFixed(2)}% ≤ 0.6% — skipping paper close, holding`);
       }
@@ -1390,7 +1399,10 @@ async function poll() {
       if (c && c.price <= order.limitPrice) {
         db.insertPaperTrade({ coinId, symbol: order.symbol, entryPrice: order.limitPrice, entryTime: new Date(), tier: order.tier }).catch(() => {});
         if (order.tier === 'elite') {
-          db.insertElitePaperTrade({ coinId, symbol: order.symbol, entryPrice: order.limitPrice, entryTime: new Date() }).catch(() => {});
+          console.log(`  ELITE PAPER TRADE INSERTING: ${order.symbol} tier=elite @${order.limitPrice.toFixed(6)}`);
+          db.insertElitePaperTrade({ coinId, symbol: order.symbol, entryPrice: order.limitPrice, entryTime: new Date() }).catch(e => {
+            console.error(`  ELITE PAPER TRADE INSERT FAILED: ${order.symbol}`, e.message);
+          });
         }
         limitOrdersFilled++;
         delete pendingLimitOrders[coinId];
@@ -2032,7 +2044,11 @@ async function runStalePaperTradeCleanup() {
     const lines = [];
     for (const t of all) {
       const coinId   = t.coin_id;
-      const price    = prevState[coinId]?.price || 0;
+      const price = prevState[coinId]?.price;
+      if (!price) {
+        console.warn(`  [STALE CLEANUP] No price in prevState for ${coinId} (${t.symbol}) — skipping close`);
+        continue;
+      }
       const exitTime = new Date();
       if (t.portfolio === 'standard') {
         await db.closePaperTrade({ coinId, exitPrice: price, exitTime, exitReason: 'STALE_7D' });
@@ -2285,8 +2301,8 @@ async function forceClosePosition(coinId) {
   const reason = `Manual force-close via API${pnlStr}`;
 
   await db.insertTrigger({ coinId, symbol, type: 'SELL', price, alpha, reason });
-  db.closePaperTrade({ coinId, exitPrice: price, exitTime: new Date(), exitReason: 'FORCE_CLOSE' }).catch(() => {});
-  db.closeElitePaperTrade({ coinId, exitPrice: price, exitTime: new Date(), exitReason: 'FORCE_CLOSE' }).catch(() => {});
+  db.closePaperTrade({ coinId, exitPrice: price, exitTime: new Date(), exitReason: 'FORCE_CLOSE' }).catch((err) => console.error('closePaperTrade failed:', err));
+  db.closeElitePaperTrade({ coinId, exitPrice: price, exitTime: new Date(), exitReason: 'FORCE_CLOSE' }).catch((err) => console.error('closeElitePaperTrade failed:', err));
   await db.deleteOpenPosition(coinId);
 
   if (prev) {
