@@ -1,7 +1,8 @@
 // poller.js — Fetches top 100 coins every 120s using stored history for Alpha Score
 
 const { computeAlphaScore, computeBreakoutScore, DEFAULT_CFG } = require('./alpha');
-const db = require('./db');
+const db     = require('./db');
+const egress = require('./egressLogger');
 
 const POLL_INTERVAL_MS = 120 * 1000;
 const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN;
@@ -633,12 +634,10 @@ function symbolToId(symbol) {
   return SYMBOL_TO_COINGECKO_ID[symbol] || symbol.toLowerCase();
 }
 
-// Fetch with a hard timeout — prevents hung requests from accumulating and causing OOM restarts
+// Fetch with a hard timeout — delegates to egressLogger so all outbound calls
+// are tracked for cost analysis. Prevents hung requests from accumulating.
 function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(url, { ...options, signal: controller.signal })
-    .finally(() => clearTimeout(timer));
+  return egress.trackFetch(url, options, timeoutMs);
 }
 
 // Fetch current prices from Bitvavo (EUR markets)
@@ -1639,6 +1638,10 @@ async function computeDailyReport() {
       console.error('Elite paper trading summary error:', e.message);
     }
 
+    // Append egress summary for cost monitoring
+    const egressSummary = egress.formatDailySummary();
+    if (egressSummary) msg += `\n\n${egressSummary}`;
+
     await sendTelegram(msg);
     volumeBlockedToday       = 0; // reset daily counters
     liquidityBlockedToday    = 0;
@@ -1646,6 +1649,7 @@ async function computeDailyReport() {
     rankBlockedToday         = 0;
     cooldownBlockedToday     = 0;
     timeFilterBlockedToday   = 0;
+    egress.resetDailyStats();
     console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles overall, ${cleanCycles} v1, ${overallWr}% WR overall, ${cleanWr ?? '-'}% clean WR)`);
   } catch(e) {
     console.error('Daily report error:', e.message);
