@@ -1,7 +1,8 @@
 // poller.js — Fetches top 100 coins every 120s using stored history for Alpha Score
 
 const { computeAlphaScore, computeBreakoutScore, DEFAULT_CFG } = require('./alpha');
-const db = require('./db');
+const db     = require('./db');
+const egress = require('./egressLogger');
 
 const POLL_INTERVAL_MS = 120 * 1000;
 const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN;
@@ -633,12 +634,10 @@ function symbolToId(symbol) {
   return SYMBOL_TO_COINGECKO_ID[symbol] || symbol.toLowerCase();
 }
 
-// Fetch with a hard timeout — prevents hung requests from accumulating and causing OOM restarts
+// Fetch with a hard timeout — delegates to egressLogger so all outbound calls
+// are tracked for cost analysis. Prevents hung requests from accumulating.
 function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(url, { ...options, signal: controller.signal })
-    .finally(() => clearTimeout(timer));
+  return egress.trackFetch(url, options, timeoutMs);
 }
 
 // Fetch current prices from Bitvavo (EUR markets)
@@ -1139,15 +1138,24 @@ async function processCoin(coin, storedHistory, candleHistory) {
       // Persist to DB so position survives restarts
       await db.saveOpenPosition({ coinId: id.toLowerCase(), symbol, buyPrice: price, buyAlpha: alpha, openedAt: new Date(), peakAlpha: alpha, peakArmed: false, consecutiveAbove, peakPrice: price });
       // Paper trade: queue limit order at price -0.3%; cancel if time filter active
+      if (tier === 'elite') {
+        console.log(`  ELITE BUY SIGNAL: ${symbol} tier=elite — checking time filter (${cetHour()}:xx CET)`);
+      }
       if (isTimeFilterBlocked()) {
         timeFilterBlockedToday++;
         timeFilterBlockedWeekly++;
         console.log(`  PAPER BLOCKED  (time filter) ${symbol.padEnd(8)} [${cetHour()}:xx CET in 08-14 block]`);
+        if (tier === 'elite') {
+          console.log(`  ELITE PAPER TRADE BLOCKED (time filter): ${symbol} tier=elite [${cetHour()}:xx CET in 08-14 block] — no limit order queued`);
+        }
       } else {
         const limitPrice = price * (1 - 0.001);
         pendingLimitOrders[id] = { limitPrice, symbol, tier, pollsRemaining: 3 };
         limitOrdersCreated++;
         console.log(`  LIMIT QUEUED   ${symbol.padEnd(8)} limit=${limitPrice.toFixed(6)} (-0.1%, expires 3 polls)`);
+        if (tier === 'elite') {
+          console.log(`  ELITE PAPER TRADE QUEUED: ${symbol} tier=elite limit=${limitPrice.toFixed(6)}`);
+        }
       }
       return;
     }
@@ -1235,8 +1243,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
           console.log(`  PEAK_EXIT ${symbol.padEnd(8)} a=${peakAlpha}→${alpha} RSI=${rsiNow?.toFixed(1)} @ $${price} [held ${Math.round(holdMs/60000)}min]`);
           sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
           prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, consecutiveBelow: 0 };
-          db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'PEAK_EXIT' }).catch(() => {});
-          db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'PEAK_EXIT' }).catch(() => {});
+          db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'PEAK_EXIT' }).catch((err) => console.error('closePaperTrade failed:', err));
+          db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'PEAK_EXIT' }).catch((err) => console.error('closeElitePaperTrade failed:', err));
           await db.deleteOpenPosition(id);
           return;
         }
@@ -1261,8 +1269,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
         console.log(`  TRAILING_STOP ${symbol.padEnd(8)} ${drawdownPct.toFixed(1)}% from peak $${peakPrice} @ $${price} [held ${Math.round(holdMs/60000)}min]`);
         sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha, peakPrice: null, consecutiveBelow: 0 };
-        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'TRAILING_STOP' }).catch(() => {});
-        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'TRAILING_STOP' }).catch(() => {});
+        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'TRAILING_STOP' }).catch((err) => console.error('closePaperTrade failed:', err));
+        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'TRAILING_STOP' }).catch((err) => console.error('closeElitePaperTrade failed:', err));
         await db.deleteOpenPosition(id);
         return;
       }
@@ -1281,8 +1289,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
         console.log(`  STOP-LOSS ${symbol.padEnd(8)} ${openPnl.toFixed(1)}% @ $${price} [held ${Math.round(holdMs/60000)}min]`);
         sellCooldownUntil[id] = Date.now() + SELL_COOLDOWN_MS;
         prevState[id] = { alpha, breakoutAlpha, price, volume24h: coin.volume24h, rsiValue: rsiNow, hasOpenBuy: false, peakArmed: false, peakAlpha: alpha, consecutiveBelow: 0 };
-        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'STOP_LOSS' }).catch(() => {});
-        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'STOP_LOSS' }).catch(() => {});
+        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'STOP_LOSS' }).catch((err) => console.error('closePaperTrade failed:', err));
+        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'STOP_LOSS' }).catch((err) => console.error('closeElitePaperTrade failed:', err));
         await db.deleteOpenPosition(id);
         return;
       }
@@ -1301,8 +1309,8 @@ async function processCoin(coin, storedHistory, candleHistory) {
       // Real signal fires unconditionally — this only affects paper trade accounting.
       const paperPnlPct = prev.buyPrice ? ((price - prev.buyPrice) / prev.buyPrice) * 100 : null;
       if (paperPnlPct === null || paperPnlPct > 0.6) {
-        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch(() => {});
-        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch(() => {});
+        db.closePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch((err) => console.error('closePaperTrade failed:', err));
+        db.closeElitePaperTrade({ coinId: id, exitPrice: price, exitTime: new Date(), exitReason: 'SELL' }).catch((err) => console.error('closeElitePaperTrade failed:', err));
       } else {
         console.log(`  PAPER HOLD ${symbol.padEnd(8)} pnl=${paperPnlPct.toFixed(2)}% ≤ 0.6% — skipping paper close, holding`);
       }
@@ -1390,7 +1398,10 @@ async function poll() {
       if (c && c.price <= order.limitPrice) {
         db.insertPaperTrade({ coinId, symbol: order.symbol, entryPrice: order.limitPrice, entryTime: new Date(), tier: order.tier }).catch(() => {});
         if (order.tier === 'elite') {
-          db.insertElitePaperTrade({ coinId, symbol: order.symbol, entryPrice: order.limitPrice, entryTime: new Date() }).catch(() => {});
+          console.log(`  ELITE PAPER TRADE INSERTING: ${order.symbol} tier=elite @${order.limitPrice.toFixed(6)}`);
+          db.insertElitePaperTrade({ coinId, symbol: order.symbol, entryPrice: order.limitPrice, entryTime: new Date() }).catch(e => {
+            console.error(`  ELITE PAPER TRADE INSERT FAILED: ${order.symbol}`, e.message);
+          });
         }
         limitOrdersFilled++;
         delete pendingLimitOrders[coinId];
@@ -1627,6 +1638,10 @@ async function computeDailyReport() {
       console.error('Elite paper trading summary error:', e.message);
     }
 
+    // Append egress summary for cost monitoring
+    const egressSummary = egress.formatDailySummary();
+    if (egressSummary) msg += `\n\n${egressSummary}`;
+
     await sendTelegram(msg);
     volumeBlockedToday       = 0; // reset daily counters
     liquidityBlockedToday    = 0;
@@ -1634,6 +1649,7 @@ async function computeDailyReport() {
     rankBlockedToday         = 0;
     cooldownBlockedToday     = 0;
     timeFilterBlockedToday   = 0;
+    egress.resetDailyStats();
     console.log(`  [DAILY REPORT] Sent to Telegram (${totalCycles} cycles overall, ${cleanCycles} v1, ${overallWr}% WR overall, ${cleanWr ?? '-'}% clean WR)`);
   } catch(e) {
     console.error('Daily report error:', e.message);
@@ -1863,6 +1879,31 @@ async function computeWeeklyReport() {
     msg += `Outside window: ${outWr !== null ? `${outWr}% WR (${outBlock.length} trades)` : 'no data'}\n`;
     msg += `Blocked this week: ${timeFilterBlockedWeekly} paper entries\n`;
 
+    // System health section
+    const openPositions  = await db.getAllOpenPositions();
+    const openPosCount   = openPositions.length;
+    const lastPollAgo    = coinCache.updatedAt
+      ? Math.floor((Date.now() - new Date(coinCache.updatedAt).getTime()) / 1000)
+      : null;
+    const coinsTracked   = coinCache.data.length;
+    const openPaperCount = paperTrades.filter(t => t.status === 'open').length;
+    const eliteWeekClosed = closedElite.filter(t => new Date(t.exit_time) > weekAgo);
+    const openEliteCount = eliteTrades.filter(t => t.status === 'open').length;
+    const paperIsHealthy = weekClosed.length > 0 || openPaperCount > 0
+      || eliteWeekClosed.length > 0 || openEliteCount > 0 || totalCycles === 0;
+
+    msg += `\n\n🏥 SYSTEM HEALTH\n`;
+    msg += `Coins tracked: ${coinsTracked} ${coinsTracked >= 100 ? '✅ normal' : '⚠️ low'}\n`;
+    if (lastPollAgo !== null) {
+      msg += `Last poll: ${lastPollAgo}s ago ${lastPollAgo < 300 ? '✅' : '⚠️ delayed'}\n`;
+    } else {
+      msg += `Last poll: ⚠️ unknown\n`;
+    }
+    msg += `Open positions: ${openPosCount} ${openPosCount <= 10 ? '✅ normal' : '⚠️ high'}\n`;
+    msg += `Blacklist active: ${weakCoinCache.size} coins\n`;
+    msg += `Auto-blacklisted this week: ${autoBlCount} coins\n`;
+    msg += `Paper trading: ${paperIsHealthy ? '✅ healthy' : '⚠️ issue detected'}\n`;
+
     await sendTelegram(msg);
     rankBlockedWeekly        = 0; // reset weekly counters
     cooldownBlockedWeekly    = 0;
@@ -1990,6 +2031,72 @@ function scheduleMorningReport() {
   scheduleNext();
 }
 
+// ── Stale Paper Trade Cleanup (daily at midnight CET) ────────────────────────
+async function runStalePaperTradeCleanup() {
+  try {
+    const stale   = await db.getStaleOpenPaperTrades(7);
+    const staleEl = await db.getStaleOpenElitePaperTrades(7);
+    const all = [
+      ...stale.map(t   => ({ ...t, portfolio: 'standard' })),
+      ...staleEl.map(t => ({ ...t, portfolio: 'elite' })),
+    ];
+    if (!all.length) {
+      console.log('  [STALE CLEANUP] No stale open paper trades found.');
+      return;
+    }
+
+    const lines = [];
+    for (const t of all) {
+      const coinId   = t.coin_id;
+      const price = prevState[coinId]?.price;
+      if (!price) {
+        console.warn(`  [STALE CLEANUP] No price in prevState for ${coinId} (${t.symbol}) — skipping close`);
+        continue;
+      }
+      const exitTime = new Date();
+      if (t.portfolio === 'standard') {
+        await db.closePaperTrade({ coinId, exitPrice: price, exitTime, exitReason: 'STALE_7D' });
+      } else {
+        await db.closeElitePaperTrade({ coinId, exitPrice: price, exitTime, exitReason: 'STALE_7D' });
+      }
+      const days = Math.floor((Date.now() - new Date(t.entry_time).getTime()) / 86400000);
+      console.log(`  PAPER TRADE AUTO-CLOSED (stale: 7+ days) ${t.symbol.toUpperCase()} — held ${days}d @ €${price}`);
+      lines.push(`• ${t.symbol.toUpperCase()} [${t.portfolio}] — held ${days}d, entry €${t.entry_price}, exit €${price}`);
+    }
+
+    const msg = `STALE PAPER TRADE CLEANUP\n────────────────────────\nAuto-closed ${all.length} position(s) open >7 days:\n${lines.join('\n')}`;
+    await sendTelegram(msg);
+  } catch (e) {
+    console.error('  [STALE CLEANUP] Error:', e.message);
+  }
+}
+
+function scheduleStaleTradeCleanup() {
+  // Run at 00:00 CET = 23:00 UTC
+  const TARGET_HOUR_UTC = 23;
+  const TARGET_MIN_UTC  = 0;
+
+  function msUntilNext() {
+    const now  = new Date();
+    const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), TARGET_HOUR_UTC, TARGET_MIN_UTC, 0));
+    if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+    return next - now;
+  }
+
+  function scheduleNext() {
+    const ms  = msUntilNext();
+    const hrs = Math.floor(ms / 3600000);
+    const min = Math.floor((ms % 3600000) / 60000);
+    console.log(`  Stale trade cleanup scheduled in ${hrs}h ${min}m (00:00 CET)`);
+    setTimeout(async () => {
+      await runStalePaperTradeCleanup();
+      scheduleNext();
+    }, ms);
+  }
+
+  scheduleNext();
+}
+
 // ── System Health Alerts ──────────────────────────────────────────────────────
 // Fires instantly when system detects its own issues
 let lastHealthAlert = 0;
@@ -2016,12 +2123,34 @@ async function checkSystemHealth(coinsCount, statesCount) {
     issues.push(`⚠️ Only ${coinsCount} coins fetched — Bitvavo may have issues`);
   }
 
+  // Check DB connectivity
+  try {
+    await db.ping();
+  } catch (e) {
+    issues.push(`🔴 DB connection failed: ${e.message}`);
+  }
+
   if (issues.length > 0) {
     lastHealthAlert = now;
     const msg = `🔧 NEXUS SYSTEM ALERT\n────────────────────────\n${issues.join('\n')}\n\nSystem is monitoring and will self-recover.`;
     await sendTelegram(msg);
     console.log(`  [HEALTH ALERT] ${issues.join(' | ')}`);
   }
+}
+
+// ── Poller Watchdog ───────────────────────────────────────────────────────────
+// Runs every 60s to detect if the poll loop has silently stalled (> 5 min gap)
+let lastWatchdogAlert = 0;
+function startPollerWatchdog() {
+  setInterval(async () => {
+    if (!coinCache.updatedAt) return;
+    const agoSeconds = Math.floor((Date.now() - new Date(coinCache.updatedAt).getTime()) / 1000);
+    if (agoSeconds > 300 && Date.now() - lastWatchdogAlert > HEALTH_ALERT_COOLDOWN) {
+      lastWatchdogAlert = Date.now();
+      await sendTelegram(`🔧 NEXUS SYSTEM ALERT\n────────────────────────\n⚠️ Poller appears stuck — last poll was ${agoSeconds}s ago (expected every ${POLL_INTERVAL_MS / 1000}s)\n\nCheck Railway logs for errors.`);
+      console.log(`  [WATCHDOG] Poller stuck — last poll ${agoSeconds}s ago`);
+    }
+  }, 60 * 1000);
 }
 
 async function start() {
@@ -2154,6 +2283,8 @@ async function start() {
   scheduleDailyReport();
   scheduleWeeklyReport();
   scheduleMorningReport();
+  scheduleStaleTradeCleanup();
+  startPollerWatchdog();
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);
 }
@@ -2174,8 +2305,8 @@ async function forceClosePosition(coinId) {
   const reason = `Manual force-close via API${pnlStr}`;
 
   await db.insertTrigger({ coinId, symbol, type: 'SELL', price, alpha, reason });
-  db.closePaperTrade({ coinId, exitPrice: price, exitTime: new Date(), exitReason: 'FORCE_CLOSE' }).catch(() => {});
-  db.closeElitePaperTrade({ coinId, exitPrice: price, exitTime: new Date(), exitReason: 'FORCE_CLOSE' }).catch(() => {});
+  db.closePaperTrade({ coinId, exitPrice: price, exitTime: new Date(), exitReason: 'FORCE_CLOSE' }).catch((err) => console.error('closePaperTrade failed:', err));
+  db.closeElitePaperTrade({ coinId, exitPrice: price, exitTime: new Date(), exitReason: 'FORCE_CLOSE' }).catch((err) => console.error('closeElitePaperTrade failed:', err));
   await db.deleteOpenPosition(coinId);
 
   if (prev) {

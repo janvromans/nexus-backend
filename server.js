@@ -5,6 +5,7 @@ const express  = require('express');
 const db       = require('./db');
 const poller   = require('./poller');
 const backtest = require('./backtest');
+const egress   = require('./egressLogger');
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -91,6 +92,37 @@ app.get('/api/history/:coinId', auth, async (req, res) => {
 app.get('/api/config', auth, (req, res) => {
   const { DEFAULT_CFG } = require('./alpha');
   res.json({ alphaThresh: DEFAULT_CFG.alphaThresh, alphaSellThresh: DEFAULT_CFG.alphaSellThresh });
+});
+
+// ── GET /api/health ───────────────────────────────────────────────────────────
+// Structured health check for monitoring and frontend warning banner
+app.get('/api/health', async (req, res) => {
+  const cache = poller.getCoinCache();
+  const lastPollAt = cache.updatedAt ? new Date(cache.updatedAt).getTime() : null;
+  const lastPollAgoSeconds = lastPollAt ? Math.floor((Date.now() - lastPollAt) / 1000) : null;
+
+  let dbConnected = false;
+  let signalsToday = 0;
+  let openPositions = 0;
+  try {
+    await db.ping();
+    dbConnected = true;
+    [signalsToday, openPositions] = await Promise.all([
+      db.getSignalsTodayCount(),
+      db.getAllOpenPositions().then(r => r.length),
+    ]);
+  } catch (e) {
+    console.error('/api/health db error:', e.message);
+  }
+
+  res.json({
+    coins_tracked: cache.data ? cache.data.length : 0,
+    prices_updating: lastPollAgoSeconds !== null && lastPollAgoSeconds < 300,
+    last_poll_ago_seconds: lastPollAgoSeconds,
+    db_connected: dbConnected,
+    signals_today: signalsToday,
+    open_positions: openPositions,
+  });
 });
 
 // ── GET /api/status ───────────────────────────────────────────────────────────
@@ -508,6 +540,37 @@ app.get('/api/elite-paper-trades', auth, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── GET /metrics/egress ───────────────────────────────────────────────────────
+// Returns per-service egress stats (requests, bytes sent/received).
+// Daily counters reset after each 20:00 CET daily report.
+app.get('/metrics/egress', auth, (req, res) => {
+  const { cumulative, daily } = egress.getStats();
+
+  function fmtBytes(n) {
+    if (n < 1024)        return `${n} B`;
+    if (n < 1048576)     return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1048576).toFixed(2)} MB`;
+  }
+
+  function annotate(obj) {
+    const out = {};
+    for (const [svc, s] of Object.entries(obj)) {
+      out[svc] = {
+        ...s,
+        bytesSentHuman:     fmtBytes(s.bytesSent),
+        bytesReceivedHuman: fmtBytes(s.bytesReceived),
+      };
+    }
+    return out;
+  }
+
+  res.json({
+    daily:      annotate(daily),
+    cumulative: annotate(cumulative),
+    updatedAt:  new Date().toISOString(),
+  });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
